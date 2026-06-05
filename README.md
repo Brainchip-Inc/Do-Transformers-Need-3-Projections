@@ -100,7 +100,7 @@ torchrun --nproc_per_node=8 transformer_MQA_1_2B.py    # MQA (1.2B)
 
 **Training time estimates** (8 × A100 40GB):
 - 300M to 10B tokens: ~24 hours
-- 1.2B to 8.85B tokens: ~3 days
+- 1.2B to 10B tokens: ~3 days
 
 Checkpoints are saved every 1,000 steps to `./outputs_<variant>/` or `./outputs_1.2B_<variant>/`.
 
