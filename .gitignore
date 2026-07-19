@@ -1,0 +1,15 @@
+# datasets, feature caches, model outputs
+vision_data/
+slimpajama_train/
+slimpajama_validation/
+outputs*/
+
+# python caches
+__pycache__/
+*.pyc
+
+# run logs
+*.log
+
+# unused draft figure (fig:tiny dropped in favor of the table)
+tiny_barchart.*
