@@ -1,0 +1,2 @@
+variant,dataset,patch,lr,n_embd,n_layer,n_head,run,accuracy
+Q=K=V,tinyimagenet,16,0.0001,768,12,12,0,0.3805
