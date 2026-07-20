@@ -8,6 +8,9 @@ outputs*/
 __pycache__/
 *.pyc
 
+# model checkpoints (released on the HF Hub, not tracked in git)
+checkpoints/
+
 # run logs
 *.log
 
