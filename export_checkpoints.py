@@ -19,8 +19,9 @@ import torch
 from synthetic_tasks import Encoder, ModelCfg, make_dataset, TASKS
 import vision_tasks as V
 
-VARIANT = "Q!=K=V"                # headline variant (separate Q, shared K=V)
 CKPT_DIR = "checkpoints"
+# filename tag per variant: qkv = baseline, qkv_kv = headline Q!=K=V (K=V)
+VARIANT_TAG = {"QKV": "qkv", "Q!=K=V": "qkv_kv"}
 
 # representative configs
 SYN_CFG = dict(n_embd=256, n_layer=2, n_head=4, seq_len=64, epochs=10,
@@ -28,11 +29,12 @@ SYN_CFG = dict(n_embd=256, n_layer=2, n_head=4, seq_len=64, epochs=10,
 VIS_CFG = dict(patch=4, n_embd=256, n_layer=2, n_head=4, lr=1e-3, batch_size=128)
 
 
-def export_synthetic(device):
+def export_synthetic(device, variant):
     import math
     import torch.nn as nn
     from synthetic_tasks import lr_lambda_factory
     os.makedirs(CKPT_DIR, exist_ok=True)
+    tag = VARIANT_TAG[variant]
     c = SYN_CFG
     for task in TASKS:
         torch.manual_seed(0)
@@ -40,7 +42,7 @@ def export_synthetic(device):
         x, y = make_dataset(c["n_train"], c["seq_len"], task, g)
         xte, yte = make_dataset(c["n_test"], c["seq_len"], task, g)
         cfg = ModelCfg(n_embd=c["n_embd"], n_layer=c["n_layer"], n_head=c["n_head"],
-                       seq_len=c["seq_len"], variant=VARIANT)
+                       seq_len=c["seq_len"], variant=variant)
         model = Encoder(cfg).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=c["lr"])
         steps = math.ceil(c["n_train"] / c["batch_size"]) * c["epochs"]
@@ -58,17 +60,18 @@ def export_synthetic(device):
         with torch.no_grad():
             pred = model(xte.to(device))[0].argmax(-1)
             acc = (pred == yte.to(device)).float().mean().item()
-        path = os.path.join(CKPT_DIR, f"synthetic_{task.lower()}_qkv_kv.pt")
-        torch.save({"task": "synthetic-" + task, "variant": VARIANT,
+        path = os.path.join(CKPT_DIR, f"synthetic_{task.lower()}_{tag}.pt")
+        torch.save({"task": "synthetic-" + task, "variant": variant,
                     "model": "Encoder", "config": vars(cfg),
                     "test_accuracy": round(acc, 4),
                     "model_state_dict": model.state_dict()}, path)
         print(f"[synthetic] {task}: acc {acc:.4f} -> {path}", flush=True)
 
 
-def export_vision(device):
+def export_vision(device, variant):
     import torch.nn.functional as F
     os.makedirs(CKPT_DIR, exist_ok=True)
+    tag = VARIANT_TAG[variant]
     c = VIS_CFG
     for ds in V.CLASSIFICATION:
         ch, native, ncls = V.CLASSIFICATION[ds]
@@ -77,7 +80,7 @@ def export_vision(device):
         tr = V.get_classification_dataset(ds, "./vision_data", True)
         te = V.get_classification_dataset(ds, "./vision_data", False)
         cfg = V.ViTConfig(image_size=native, channels=ch, patch=c["patch"], n_classes=ncls,
-                          n_embd=c["n_embd"], n_layer=c["n_layer"], n_head=c["n_head"], variant=VARIANT)
+                          n_embd=c["n_embd"], n_layer=c["n_layer"], n_head=c["n_head"], variant=variant)
         model = V.ViT(cfg).to(device)
         opt = torch.optim.Adam(model.parameters(), lr=c["lr"])
         sched = torch.optim.lr_scheduler.MultiStepLR(opt, [int(0.5 * E), int(0.75 * E)], gamma=0.1)
@@ -89,8 +92,8 @@ def export_vision(device):
                 opt.zero_grad(); loss.backward(); opt.step()
             sched.step()
         acc = V.evaluate(model, V._loader(te, c["batch_size"], 4, False), device)
-        path = os.path.join(CKPT_DIR, f"vision_{ds}_qkv_kv.pt")
-        torch.save({"task": "vision-" + ds, "variant": VARIANT,
+        path = os.path.join(CKPT_DIR, f"vision_{ds}_{tag}.pt")
+        torch.save({"task": "vision-" + ds, "variant": variant,
                     "model": "ViT", "config": {k: getattr(cfg, k) for k in vars(cfg)},
                     "test_accuracy": round(acc, 4),
                     "model_state_dict": model.state_dict()}, path)
@@ -100,15 +103,17 @@ def export_vision(device):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--device", type=str, default=None)
+    ap.add_argument("--variant", default="Q!=K=V", choices=list(VARIANT_TAG),
+                    help="QKV (baseline) or Q!=K=V (headline)")
     ap.add_argument("--only", choices=["synthetic", "vision", "both"], default="both")
     args = ap.parse_args()
     device = torch.device(args.device) if args.device else torch.device(
         "cuda" if torch.cuda.is_available() else "cpu")
-    print(f"device={device}  variant={VARIANT}  -> {CKPT_DIR}/", flush=True)
+    print(f"device={device}  variant={args.variant}  -> {CKPT_DIR}/", flush=True)
     if args.only in ("synthetic", "both"):
-        export_synthetic(device)
+        export_synthetic(device, args.variant)
     if args.only in ("vision", "both"):
-        export_vision(device)
+        export_vision(device, args.variant)
     print("done.", flush=True)
 
 

@@ -11,42 +11,52 @@ tags:
   - sequence-modeling
 ---
 
-# Do Transformers Need Three Projections? — Q≠K=V checkpoints
+# Do Transformers Need Three Projections? — checkpoints
 
-Reference checkpoints for the **Q≠K=V** attention variant (separate query, **shared key and
-value**) from the ICML 2026 paper *"Do Transformers Need Three Projections? A Systematic Study
-of QKV Variants"* (Kayyam, Madan Gopal, Lewis; BrainChip Inc.).
+Reference checkpoints from the ICML 2026 paper *"Do Transformers Need Three Projections? A
+Systematic Study of QKV Variants"* (Kayyam, Madan Gopal, Lewis; BrainChip Inc.). This release
+pairs the standard **QKV baseline** with the paper's headline **Q≠K=V** variant so the two can be
+compared directly on matched architectures.
 
-Q≠K=V is the paper's **headline variant**: it removes the value projection and reuses the key as
-the value, so only **K** needs to be cached during autoregressive generation — a **50% KV-cache
-reduction** — while keeping attention asymmetric (unlike the symmetric Q=K variants). See the
-[paper / code repository](https://github.com/Brainchip-Inc/Do-Transformers-Need-3-Projections)
-for the full study across all six projection-sharing variants.
+- **QKV** — standard attention with separate query, key, and value projections (baseline).
+- **Q≠K=V** — separate query, **shared key and value** (`V = K`). Only **K** is cached during
+  autoregressive generation → **50% KV-cache reduction**, while attention stays asymmetric
+  (unlike the symmetric `Q=K` variants).
+
+The point of the pairing: Q≠K=V matches the QKV baseline in accuracy at half the KV cache. The
+full study (all six projection-sharing variants) is in the
+[code repository](https://github.com/Brainchip-Inc/Do-Transformers-Need-3-Projections).
 
 ## What's included
 
-Nine trained-from-scratch Q≠K=V checkpoints (PyTorch `state_dict` + rebuild config + test accuracy):
+18 trained-from-scratch checkpoints — QKV (`*_qkv.pt`) and Q≠K=V (`*_qkv_kv.pt`) for each task.
+Each is a dict: `{task, variant, model, config, test_accuracy, model_state_dict}`.
 
 **Synthetic sequence tasks** (single Transformer encoder, token accuracy):
 
-| Checkpoint | Task | Accuracy |
+| Task | QKV (`*_qkv.pt`) | Q≠K=V (`*_qkv_kv.pt`) |
 |---|---|---|
-| `checkpoints/synthetic_reverse_qkv_kv.pt` | REVERSE | 1.000 |
-| `checkpoints/synthetic_sort_qkv_kv.pt` | SORT | 0.996 |
-| `checkpoints/synthetic_sub_qkv_kv.pt` | SUB | 1.000 |
-| `checkpoints/synthetic_swap_qkv_kv.pt` | SWAP | 1.000 |
-| `checkpoints/synthetic_copy_qkv_kv.pt` | COPY | 1.000 |
+| REVERSE | 1.000 | 1.000 |
+| SORT | 0.998 | 0.996 |
+| SUB | 1.000 | 1.000 |
+| SWAP | 1.000 | 1.000 |
+| COPY | 1.000 | 1.000 |
+
+Files: `checkpoints/synthetic_<task>_qkv.pt` and `checkpoints/synthetic_<task>_qkv_kv.pt`.
 
 **Vision classification** (ViT trained from scratch, top-1 accuracy):
 
-| Checkpoint | Dataset | Accuracy |
+| Dataset | QKV (`*_qkv.pt`) | Q≠K=V (`*_qkv_kv.pt`) |
 |---|---|---|
-| `checkpoints/vision_mnist_qkv_kv.pt` | MNIST | 0.978 |
-| `checkpoints/vision_fmnist_qkv_kv.pt` | FashionMNIST | 0.882 |
-| `checkpoints/vision_cifar10_qkv_kv.pt` | CIFAR-10 | 0.698 |
-| `checkpoints/vision_cifar100_qkv_kv.pt` | CIFAR-100 | 0.445 |
+| MNIST | 0.981 | 0.978 |
+| FashionMNIST | 0.887 | 0.882 |
+| CIFAR-10 | 0.696 | 0.698 |
+| CIFAR-100 | 0.437 | 0.445 |
 
-Each checkpoint is a dict: `{task, variant, model, config, test_accuracy, model_state_dict}`.
+Files: `checkpoints/vision_<dataset>_qkv.pt` and `checkpoints/vision_<dataset>_qkv_kv.pt`.
+
+Across every task the two variants are within ~0.005 of each other — Q≠K=V matches the QKV
+baseline while halving the KV cache.
 
 ## Usage
 
@@ -63,7 +73,7 @@ from huggingface_hub import hf_hub_download
 
 REPO = "BrainChip-AI/do-transformers-need-3-projections"
 
-# --- synthetic task model ---
+# --- synthetic task model (swap _qkv <-> _qkv_kv for baseline vs Q!=K=V) ---
 from synthetic_tasks import Encoder, ModelCfg
 path = hf_hub_download(REPO, "checkpoints/synthetic_reverse_qkv_kv.pt")
 ckpt = torch.load(path, map_location="cpu")
