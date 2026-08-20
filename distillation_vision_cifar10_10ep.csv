@@ -1,0 +1,4 @@
+dataset,mode,teacher_qkv_acc,scratch_qkv_kv_acc,zero_shot_surgery_acc,distill_epoch1_acc,distill_epoch2_acc,distill_epoch3_acc,distill_epoch4_acc,distill_epoch5_acc,distill_epoch6_acc,distill_epoch7_acc,distill_epoch8_acc,distill_epoch9_acc,distill_epoch10_acc
+cifar10,keep_k,0.6959,0.6976,0.076,0.4986,0.5796,0.6086,0.6239,0.6408,0.6527,0.6599,0.6642,0.6668,0.6656
+cifar10,keep_v,0.6959,0.6976,0.1525,0.6072,0.6679,0.6822,0.687,0.6869,0.6933,0.6891,0.6913,0.6917,0.693
+cifar10,avg,0.6959,0.6976,0.3681,0.6767,0.6877,0.6882,0.6943,0.6971,0.6975,0.6997,0.6996,0.7013,0.7015

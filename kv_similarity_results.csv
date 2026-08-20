@@ -1,0 +1,10 @@
+domain,name,weight_cos_sim,activation_cka
+synthetic,REVERSE,-0.0016,0.681
+synthetic,SORT,0.0009,0.6475
+synthetic,SUB,-0.0025,0.9351
+synthetic,SWAP,-0.0014,0.6842
+synthetic,COPY,0.0026,0.9346
+vision,mnist,0.0005,0.5336
+vision,fmnist,0.0014,0.6721
+vision,cifar10,0.0011,0.7065
+vision,cifar100,-0.0049,0.7467

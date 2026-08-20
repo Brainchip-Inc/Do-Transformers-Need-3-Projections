@@ -1,0 +1,11 @@
+task,layer,addressing_acc,k_content_probe_acc,v_content_probe_acc
+REVERSE,0,1.0,1.0,1.0
+REVERSE,1,0.8333,1.0,1.0
+SORT,0,0.0546,1.0,1.0
+SORT,1,0.0233,1.0,0.9912
+SUB,0,0.0534,1.0,1.0
+SUB,1,0.0247,1.0,1.0
+SWAP,0,1.0,1.0,1.0
+SWAP,1,0.7802,1.0,1.0
+COPY,0,0.0538,1.0,1.0
+COPY,1,0.0183,1.0,1.0

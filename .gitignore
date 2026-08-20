@@ -2,6 +2,8 @@
 vision_data/
 slimpajama_train/
 slimpajama_validation/
+fineweb_edu_train/
+fineweb_edu_validation/
 outputs*/
 
 # python caches
@@ -10,6 +12,7 @@ __pycache__/
 
 # model checkpoints (released on the HF Hub, not tracked in git)
 checkpoints/
+checkpoints_llm/
 
 # run logs
 *.log
