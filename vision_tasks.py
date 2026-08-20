@@ -173,6 +173,24 @@ class _TinyImageFolder(torch.utils.data.Dataset):
 # VISION TRANSFORMER (reuses SharedProjAttention for the six variants)
 # ============================================================================
 
+class DropPath(nn.Module):
+    """Stochastic depth: drops the whole residual branch per-sample at rate `p`
+    during training, scaling surviving branches by 1/(1-p) to keep the expectation
+    unchanged (standard DeiT/timm formulation)."""
+
+    def __init__(self, p=0.0):
+        super().__init__()
+        self.p = p
+
+    def forward(self, x):
+        if self.p == 0.0 or not self.training:
+            return x
+        keep = 1.0 - self.p
+        mask_shape = (x.shape[0],) + (1,) * (x.ndim - 1)
+        mask = x.new_empty(mask_shape).bernoulli_(keep)
+        return x * mask / keep
+
+
 @dataclass
 class ViTConfig:
     image_size: int
@@ -186,6 +204,7 @@ class ViTConfig:
     pos_dim: int = 50
     n_inner_mult: int = 4
     dropout: float = 0.1
+    drop_path: float = 0.0  # max stochastic-depth rate (linearly scaled across layers)
 
 
 class PatchEmbed(nn.Module):
@@ -206,7 +225,7 @@ class PatchEmbed(nn.Module):
 
 
 class ViTBlock(nn.Module):
-    def __init__(self, cfg: ViTConfig, share, plus, max_len):
+    def __init__(self, cfg: ViTConfig, share, plus, max_len, drop_path=0.0):
         super().__init__()
         self.ln1 = nn.LayerNorm(cfg.n_embd)
         self.attn = SharedProjAttention(cfg.n_embd, cfg.n_head, share, plus,
@@ -219,10 +238,12 @@ class ViTBlock(nn.Module):
             nn.Linear(cfg.n_inner_mult * cfg.n_embd, cfg.n_embd),
             nn.Dropout(cfg.dropout),
         )
+        # stochastic depth: drop the whole residual branch per-sample at rate drop_path
+        self.drop_path = DropPath(drop_path) if drop_path > 0.0 else nn.Identity()
 
     def forward(self, x):
-        x = x + self.attn(self.ln1(x))
-        x = x + self.mlp(self.ln2(x))
+        x = x + self.drop_path(self.attn(self.ln1(x)))
+        x = x + self.drop_path(self.mlp(self.ln2(x)))
         return x
 
 
@@ -236,8 +257,10 @@ class ViT(nn.Module):
         self.pos_emb = nn.Parameter(torch.randn(1, n, cfg.n_embd) * 0.02)
         self.drop = nn.Dropout(cfg.dropout)
         share, plus = VARIANTS[cfg.variant]
-        self.blocks = nn.ModuleList([ViTBlock(cfg, share, plus, max_len=n)
-                                     for _ in range(cfg.n_layer)])
+        # linearly scale stochastic-depth rate across layers (0 -> cfg.drop_path), DeiT-style
+        dpr = [cfg.drop_path * i / max(1, cfg.n_layer - 1) for i in range(cfg.n_layer)]
+        self.blocks = nn.ModuleList([ViTBlock(cfg, share, plus, max_len=n, drop_path=dpr[i])
+                                     for i in range(cfg.n_layer)])
         self.ln_f = nn.LayerNorm(cfg.n_embd)
         self.head = nn.Linear(cfg.n_embd, cfg.n_classes)
 

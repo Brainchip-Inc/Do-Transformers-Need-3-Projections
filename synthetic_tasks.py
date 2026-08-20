@@ -113,6 +113,7 @@ VARIANTS = {
     "Q!=K=V":     ("kv",   False),
     "Q=K=V":      ("qkv",  False),
     "(Q=K=V)+":   ("qkv",  True),
+    "QVV(3)":     ("qvv3", False),
 }
 
 
@@ -124,6 +125,14 @@ class SharedProjAttention(nn.Module):
         qk   -> q = k = c_qk(x); separate c_v          (symmetric scores)
         kv   -> separate c_q; k = v = c_kv(x)
         qkv  -> single c_qkv(x) for all three          (symmetric scores)
+        qvv3 -> q = c_q2(c_q1(x)) (depth-2 factored); k = v = c_v(x). Same
+                asymmetric Q!=K=V attention, but Q is a composition of two
+                learned matrices, so param count matches standard QKV
+                (Gao & Xu 2026's QVV(3): the two Q matrices + one V matrix =
+                3 learned matrices, same total as W^Q, W^K, W^V). c_q1/c_q2
+                have no nonlinearity between them so they fuse into a single
+                matrix at inference (see `fuse_qvv3`), making inference cost
+                identical to the plain kv-share variant.
     plus: inject 2D positional encoding into the score map (see build_2d_sincos).
     """
 
@@ -148,6 +157,10 @@ class SharedProjAttention(nn.Module):
             self.c_kv = nn.Linear(n_embd, n_embd)
         elif share == "qkv":
             self.c_qkv = nn.Linear(n_embd, n_embd)
+        elif share == "qvv3":
+            self.c_q1 = nn.Linear(n_embd, n_embd)
+            self.c_q2 = nn.Linear(n_embd, n_embd)
+            self.c_v = nn.Linear(n_embd, n_embd)
         else:
             raise ValueError(share)
 
@@ -171,6 +184,8 @@ class SharedProjAttention(nn.Module):
             qk = self.c_qk(x); q, k, v = qk, qk, self.c_v(x)
         elif self.share == "kv":
             q = self.c_q(x); kv = self.c_kv(x); k, v = kv, kv
+        elif self.share == "qvv3":
+            q = self.c_q2(self.c_q1(x)); kv = self.c_v(x); k, v = kv, kv
         else:  # qkv
             s = self.c_qkv(x); q, k, v = s, s, s
 
@@ -197,6 +212,23 @@ class SharedProjAttention(nn.Module):
         if return_attn:
             return out, attn    # post-softmax attention weights [B,H,T,T]
         return out
+
+    @torch.no_grad()
+    def fuse_qvv3(self):
+        """Collapse c_q1, c_q2 into a single c_q Linear (exact, since there is no
+        nonlinearity between them): y = W2(W1 x + b1) + b2 = (W2 W1) x + (W2 b1 + b2).
+        Returns a new 'kv'-share module with identical forward output, matching the
+        paper's claim that QVV(3) has no extra inference cost over Q!=K=V."""
+        assert self.share == "qvv3"
+        fused = SharedProjAttention(self.n_embd, self.n_head, "kv", self.plus)
+        W1, b1 = self.c_q1.weight, self.c_q1.bias
+        W2, b2 = self.c_q2.weight, self.c_q2.bias
+        fused.c_q.weight.copy_(W2 @ W1)
+        fused.c_q.bias.copy_(W2 @ b1 + b2)
+        fused.c_kv.weight.copy_(self.c_v.weight)
+        fused.c_kv.bias.copy_(self.c_v.bias)
+        fused.c_proj.load_state_dict(self.c_proj.state_dict())
+        return fused
 
 
 # ============================================================================

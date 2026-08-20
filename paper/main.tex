@@ -1,0 +1,498 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{xcolor}
+\usepackage{caption}
+
+\newcommand{\todo}[1]{\textcolor{red}{[TODO: #1]}}
+\newcommand{\wq}{W^{Q}}
+\newcommand{\wk}{W^{K}}
+\newcommand{\wv}{W^{V}}
+
+\title{Do Vision Transformers Need Three Projections?\\
+Scaling Projection-Sharing Attention to ImageNet}
+
+\author{
+Ali Kayyam \\
+BrainChip Inc., Laguna Hills, CA, USA \\
+\texttt{akayyam@brainchip.com}
+}
+
+\date{Draft --- \today}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We study whether the projection-sharing attention variants shown to preserve
+language-model quality while halving the KV cache
+\citep{kayyam2026three} generalize to large-scale vision transformers.
+Prior work in this line --- including our own systematic study of
+query/key/value projection sharing on synthetic, vision (MNIST/CIFAR/TinyImageNet),
+and language-modeling tasks, and a concurrent line of work reframing the
+key-value-shared variant as ``Keyless Attention'' with a value-space routing
+interpretation \citep{gao2026keyless} --- has validated projection sharing
+at small-to-medium model and dataset scale. It remains open whether these
+gains persist at the scale relevant to production vision systems: ViT-Base
+and ViT-Large backbones trained on full ImageNet-1k, and whether the
+overfitting-reduction effect attributed to gradient entanglement between
+routing and retrieval parameters \citep{gao2026keyless} is a language-specific
+artifact or a general property of shared-projection attention. This paper
+lays out the experimental design, hypotheses, and evaluation protocol for
+this extension, including a compute-constrained training plan (ImageNet-100
+pilot sweep, followed by a confirmatory ImageNet-1k run) and a downstream
+transfer evaluation using detection backbones. Results sections are left as
+placeholders pending experiments.
+\end{abstract}
+
+\section{Introduction}
+\label{sec:intro}
+
+The query-key-value (QKV) formulation of self-attention \citep{vaswani2017attention}
+is near-universal in both language and vision transformers, yet the individual
+necessity of each of the three projections is not well understood. We
+previously showed that in language models, merging the key and value
+projections (\(K = V\), which we term \textbf{Q-K=V}), merging the query and
+key projections with a corrective 2D positional term (\textbf{Q=K-V}\(^+\)),
+and even collapsing all three into a single projection can match or nearly
+match standard QKV attention, with the \(K{=}V\) variant achieving a 50\%
+KV-cache reduction at only 3.1\% perplexity degradation on 300M--1.2B
+parameter language models trained on 10B tokens \citep{kayyam2026three}.
+That study also included a preliminary vision pass on MNIST, CIFAR, and
+TinyImageNet.
+
+A concurrent paper, \emph{Keyless Attention} \citep{gao2026keyless},
+independently arrives at the same base architecture as our Q-K=V variant ---
+algebraically, \(\mathrm{softmax}(QK^\top)K \equiv \mathrm{softmax}(QV^\top)V\)
+when \(K=V\) --- but frames it as eliminating the key projection and routing
+directly through value space, rather than as a special case of projection
+sharing. That paper extends the idea along a new axis, \emph{depth-\(m\)
+attention factorization}, in which the query and/or value projection is
+itself a composition of \(m\) learned matrices, and shows that the depth-3
+instantiation (\textbf{QVV(3)}) matches the parameter count of standard QKV
+attention while still requiring only a value cache at inference time. It
+also reports a consistent finding across five language models and four
+architectures (GPT-2, Pythia, Qwen2, Llama 3.2): projection-shared attention
+degrades \emph{more slowly} after the best-validation epoch than standard
+attention, and attributes this to a gradient-entanglement effect between the
+routing and retrieval parameters that acts as an implicit regularizer.
+
+Two questions follow naturally from combining these two lines of work, and
+motivate this paper:
+
+\begin{enumerate}
+    \item \textbf{Does projection sharing hold at ImageNet scale?} All
+    vision evidence to date for this family of methods is at
+    MNIST/CIFAR/TinyImageNet scale, with small models. Vision transformers
+    at the scale used in production (ViT-B/16, ViT-L/16, ImageNet-1k) have
+    a very different data/parameter regime, and it is not obvious that a
+    5.6\%-perplexity-scale finding on WikiText-103 will transfer.
+    \item \textbf{Is the overfitting-reduction effect language-specific?}
+    The gradient-entanglement argument in \citet{gao2026keyless} is
+    architecture-agnostic in principle, but has only been tested on
+    autoregressive causal language modeling. Vision transformers use
+    bidirectional (non-causal) attention over a 2D patch grid, which
+    changes both the routing geometry and the overfitting dynamics
+    (ImageNet-1k, at 1.28M images, is also a substantially larger and more
+    diverse training set relative to model capacity than WikiText-103 at
+    equivalent scale).
+\end{enumerate}
+
+We additionally note that vision transformers offer a structural advantage
+absent in language: patches sit on an explicit 2D grid, so the 2D
+positional-encoding correction we introduced for the symmetric Q=K-V and
+Q=K=V variants in \citet{kayyam2026three} is a \emph{native} fit rather than
+an artificial addition, unlike in the 1D sequential setting of language
+modeling.
+
+This paper is a design document for the resulting study: we specify the
+architectures, training recipes, compute budget, hypotheses, and evaluation
+protocol, and lay out the paper structure we intend to fill in once
+experiments are complete. Sections \ref{sec:results} onward contain
+placeholders where results tables and figures will go.
+
+\subsection{Contributions (planned)}
+\begin{itemize}
+    \item First evaluation of projection-sharing attention (Q-K=V, Q=K-V\(^+\),
+    Q=K=V\(^+\), and QVV(3)) on ViT-S/16 and ViT-B/16 backbones trained on
+    full ImageNet-1k, closing the scale gap left by prior small-model
+    vision experiments.
+    \item A direct test of whether the overfitting-reduction /
+    gradient-entanglement effect reported for language models
+    \citep{gao2026keyless} reproduces under non-causal, 2D-grid attention.
+    \item A downstream transfer evaluation, fine-tuning the resulting
+    backbones into a detection pipeline (FCOS/GFL-style) to test whether
+    projection sharing affects fine-grained spatial localization, not just
+    classification accuracy.
+    \item A practical training-budget report (wall-clock time, GPU-hours)
+    for reproducing this study on 1--2 A100-class GPUs, to make the
+    experiment accessible to groups without large clusters.
+\end{itemize}
+
+\section{Related Work}
+\label{sec:related}
+
+\paragraph{Projection sharing in attention.}
+\citet{kayyam2026three} systematically evaluate three projection-sharing
+constraints --- Q=K-V, Q-K=V, and Q=K=V --- and show that the last two,
+which produce symmetric attention maps, can be de-symmetrized via a 2D
+sinusoidal positional correction. The Q-K=V variant is highlighted as the
+most favorable trade-off, achieving 50\% KV-cache reduction with a 3.1\%
+perplexity cost. \citet{gao2026keyless} re-derive the same base mechanism
+from a ``value-space routing'' motivation and generalize it via depth-\(m\)
+attention factorization, introducing the QVV(3) variant that matches
+standard attention's parameter count and, in their experiments, matches or
+exceeds it on perplexity and zero-shot benchmarks across five models while
+halving the KV cache. \citet{borji2023kv} is an earlier, independent
+precursor examining a KV-only (query-key merged) transformer formulation.
+
+\paragraph{Shared projections in vision transformers.}
+\citet{lee2021rethinking} share nonlinear embedding layers across Q, K, V
+in tiny ImageNet-scale ViTs (3.1M parameters) with a code-parameterized
+sharing scheme, reporting 71.4\% top-1 accuracy at small scale. MASA
+\citep{masa2025} decomposes attention projection matrices into a shared
+dictionary of matrix atoms, cutting attention parameters by 66.7\% with
+on-par performance, and includes a ViT classification experiment. Neither
+targets KV-cache reduction or ViT-B/L scale training on full ImageNet-1k;
+both motivate parameter reduction rather than routing/retrieval unification,
+and neither reports an overfitting/regularization analysis. We view this as
+the primary novelty gap this study addresses on the vision side.
+
+\paragraph{KV-cache reduction more broadly.}
+Multi-Query Attention \citep{shazeer2019mqa} and Grouped-Query Attention
+\citep{ainslie2023gqa} reduce the KV cache by sharing keys/values across
+attention heads, and Multi-Head Latent Attention \citep{deepseek2024mla}
+compresses keys and values into a shared low-rank latent. These methods are
+orthogonal to projection sharing, which instead removes redundancy between
+the key and value \emph{projections themselves}; \citet{kayyam2026three} and
+\citet{gao2026keyless} both note the two families compose.
+
+\paragraph{ViT training recipes.}
+We adopt training conventions from \citet{dosovitskiy2021vit} and
+\citet{touvron2021deit}; DeiT's data-efficient training recipe
+(RandAugment, Mixup, CutMix, stochastic depth, label smoothing) is
+essential for training ViT-B from scratch on ImageNet-1k without
+ImageNet-21k pretraining, and we use it as our default recipe with a
+compressed epoch budget (Section~\ref{sec:setup}).
+
+\section{Method}
+\label{sec:method}
+
+\subsection{Recap: projection-sharing variants}
+Standard multi-head attention computes, per head,
+\begin{equation}
+    \mathrm{Attn}(Q,K,V) = \mathrm{softmax}\!\left(\frac{QK^\top}{\sqrt{d_k}}\right)V,
+    \qquad Q=X\wq,\ K=X\wk,\ V=X\wv .
+\end{equation}
+We evaluate the following variants, applied to a standard ViT patch-embedding
+backbone (Section~\ref{sec:setup}):
+
+\begin{description}
+    \item[Q-K=V.] Set \(V=K\), i.e.\ drop \(\wv\) and read the output from
+    the key projection: \(A=\mathrm{softmax}(\alpha QK^\top)K\). Equivalent
+    to the QVV(2) base case of \citet{gao2026keyless}. Halves the
+    cache (single projection cached in the autoregressive setting; for
+    ViT, halves activation memory for the shared K/V tensor during
+    training and any cached-inference use case, e.g.\ streaming or
+    tiled inference).
+    \item[Q=K-V\(^+\).] Set \(Q=K\), producing a symmetric attention map
+    \(\mathrm{softmax}(\alpha KK^\top)V\); corrected for asymmetry with a
+    2D positional term (Section~\ref{sec:posenc}).
+    \item[Q=K=V\(^+\).] Collapse all three projections to one, with the
+    same 2D positional correction.
+    \item[QVV(3).] Depth-3 factorization from \citet{gao2026keyless}:
+    \(Q = X W^{Q_1}W^{Q_2}\), \(V=X\wv\), output
+    \(\mathrm{softmax}(QV^\top/\sqrt{d_k})V\). Matches standard attention's
+    parameter count; at inference, \(W^{Q_1}W^{Q_2}\) is fused into a single
+    matrix, so it incurs no extra cost over Q-K=V while retaining full
+    QKV parameter capacity.
+\end{description}
+
+All variants preserve the standard ViT patch embedding, learned or
+sinusoidal position embedding for the base sequence order, MLP block,
+LayerNorm placement, and classification head; the attention block is the
+sole controlled variable, matching the ablation design of both source
+papers.
+
+\subsection{2D positional correction on a native 2D grid}
+\label{sec:posenc}
+\citet{kayyam2026three} introduce a 2D sinusoidal positional correction to
+de-symmetrize the Q=K-V and Q=K=V attention maps in language modeling, where
+the 2D structure is an artificial construction imposed on a 1D token
+sequence. In ViT, patches are natively arranged on a 2D grid
+(\(H/p \times W/p\) for patch size \(p\)), so the same correction can be
+applied using the model's actual patch coordinates rather than a synthetic
+2D reindexing of a 1D sequence:
+\begin{equation}
+    \tilde{S}_{ij} = S_{ij} + \mathrm{Conv}_{1\times1}\big(P(\mathrm{row}_i,\mathrm{col}_i,\mathrm{row}_j,\mathrm{col}_j)\big),
+\end{equation}
+where \(P\) is a fixed 2D relative-position sinusoidal embedding indexed by
+true patch row/column, and \(S\) is the symmetric raw attention score matrix.
+We view this as a stronger test of the correction's design intent than the
+language setting, and a natural point of comparison to existing 2D relative
+position bias schemes in windowed vision transformers (e.g.\ Swin
+\citep{liu2021swin}), which we will cite as a baseline design pattern rather
+than a competing method.
+
+\subsection{Hypotheses}
+\label{sec:hypotheses}
+\begin{description}
+    \item[H1 (Accuracy parity).] Q-K=V and QVV(3) match standard ViT-B/16
+    top-1 accuracy on ImageNet-1k within noise (\(\lesssim\)0.5 pt),
+    consistent with the language-modeling degradation being small
+    (3.1\%) and vision transformers being comparatively more
+    over-parameterized relative to ImageNet-1k than LLMs are relative to
+    their pretraining corpora.
+    \item[H2 (Overfitting reduction transfers).] Shared-projection variants
+    show a smaller train/val generalization gap than standard QKV at
+    matched epoch count, replicating the gradient-entanglement
+    regularization effect from \citet{gao2026keyless} outside the causal
+    LM setting.
+    \item[H3 (Symmetric variants underperform more in vision than language).]
+    Because 2D spatial relationships in images are less inherently
+    directional than causal token order in language, we expect the gap
+    between corrected symmetric variants (Q=K-V\(^+\), Q=K=V\(^+\)) and
+    the asymmetric variants (Q-K=V, QVV(3)) to be \emph{smaller} in vision
+    than was reported in \citet{kayyam2026three} for language --- i.e.\
+    symmetry is less costly for spatial patch attention than for causal
+    sequence attention. This is falsifiable and could go the other way if
+    fine-grained spatial ordering (e.g.\ for texture or object boundary
+    localization) turns out to matter more than expected.
+    \item[H4 (Transfer to detection is architecture-sensitive).] We expect
+    accuracy parity on classification to \emph{not} guarantee parity on
+    detection transfer, since detection localization loss is more
+    sensitive to fine spatial attention structure; this is the primary
+    motivation for including the downstream transfer experiment
+    (Section~\ref{sec:transfer}) rather than treating ImageNet top-1 as
+    sufficient evidence.
+\end{description}
+
+\section{Experimental Setup}
+\label{sec:setup}
+
+\subsection{Architectures}
+\begin{itemize}
+    \item \textbf{ViT-S/16} (22M params, 12 layers, hidden 384, 6 heads):
+    primary model for the variant sweep, chosen for fast iteration.
+    \item \textbf{ViT-B/16} (86M params, 12 layers, hidden 768, 12 heads):
+    confirmatory run on the winning variant(s) from the sweep, and the
+    scale most directly comparable to production vision-backbone usage.
+    \item \textbf{ViT-L/16} (307M params): stretch goal, only if the
+    ViT-S~$\to$~ViT-B trend is informative and compute allows; used to
+    test whether any observed effect (H1--H3) grows or shrinks with
+    scale, mirroring the depth-scaling analysis in
+    \citet{kayyam2026three} (12-layer vs.\ 36-layer GPT-2).
+\end{itemize}
+
+\subsection{Datasets and schedule}
+Two-phase plan to manage compute cost on 1--2 A100-class GPUs:
+\begin{enumerate}
+    \item \textbf{Pilot sweep --- ImageNet-100} (100-class subset,
+    $\sim$130K images): all five conditions (QKV baseline, Q-K=V,
+    Q=K-V\(^+\), Q=K=V\(^+\), QVV(3)) on ViT-S/16, 100 epochs, DeiT
+    recipe. Used to pick the variant(s) that proceed to the confirmatory
+    run and to get an early read on H2/H3.
+    \item \textbf{Confirmatory run --- ImageNet-1k} (1.28M images): QKV
+    baseline vs.\ the 1--2 best pilot variants, on ViT-B/16 (and ViT-L/16
+    if feasible), 100--150 epoch compressed DeiT recipe (RandAugment,
+    Mixup~$\alpha{=}0.8$, CutMix~$\alpha{=}1.0$, stochastic depth,
+    label smoothing 0.1), rather than the full 300-epoch recipe, following
+    the same ``controlled comparison over SOTA-chasing'' framing used for
+    the WikiText-103 subset in \citet{kayyam2026three}.
+\end{enumerate}
+
+\begin{table}[h]
+\centering
+\caption{Estimated wall-clock training budget (bf16, DeiT-style recipe,
+data pipeline assumed non-bottlenecked via FFCV/DALI). Two-GPU figures
+assume $\sim$1.8$\times$ scaling from single-GPU due to gradient-sync
+overhead.}
+\label{tab:compute}
+\begin{tabular}{@{}llrrr@{}}
+\toprule
+Dataset & Model & Epochs & 1$\times$ A100 & 2$\times$ A100 \\
+\midrule
+ImageNet-100 & ViT-S/16 & 100 & 5--7 hrs & $\sim$3 hrs \\
+ImageNet-100 & ViT-B/16 & 100 & 15--20 hrs & 8--10 hrs \\
+ImageNet-1k  & ViT-S/16 & 100--150 & 12--18 hrs & 6--9 hrs \\
+ImageNet-1k  & ViT-B/16 & 100--150 & 2--3 days & 1--1.5 days \\
+ImageNet-1k  & ViT-B/16 & 300 (full DeiT) & 6--8 days & 3--4.5 days \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+With 5 conditions in the ImageNet-100 pilot and 2--3 in the ImageNet-1k
+confirmatory phase, total estimated compute is on the order of
+\(\sim\)4--5 GPU-days on a single A100, or \(\sim\)2.5--3 GPU-days on two,
+dominated by the ImageNet-1k ViT-B/16 runs.
+
+\subsection{Evaluation metrics}
+\begin{itemize}
+    \item Top-1 / top-5 accuracy at best-validation epoch (mirrors
+    Table~1 of \citet{kayyam2026three} and Table~1 of
+    \citet{gao2026keyless}).
+    \item Overfitting gap \(\Delta = \) (final-epoch val.\ loss) $-$
+    (best-epoch val.\ loss), directly testing H2.
+    \item Activation/cache memory reduction for the shared-projection
+    variants, reported both in absolute terms and as a fraction of
+    standard-attention memory (target: 50\% for Q-K=V and QVV(3), as in
+    prior work).
+    \item Throughput (images/sec, batch size fixed) at inference,
+    matching the decode-throughput benchmarking methodology of
+    \citet{gao2026keyless} adapted to non-autoregressive ViT inference.
+\end{itemize}
+
+\subsection{Downstream transfer: detection}
+\label{sec:transfer}
+To test H4, we fine-tune the ImageNet-1k-pretrained ViT-B/16 backbones
+(QKV baseline and best-performing shared variant) into a detection
+pipeline combining FCOS-style dense prediction, GFL loss, and SimOTA label
+assignment, consistent with our existing detection scaffold. We report
+COCO-style AP, AP\textsubscript{50}, AP\textsubscript{75}, and
+size-stratified AP (small/medium/large), since we expect any localization
+sensitivity from projection sharing to appear disproportionately on
+small-object AP, where fine spatial routing matters most.
+
+\section{Results}
+\label{sec:results}
+
+\subsection{ImageNet-100 pilot sweep}
+\todo{Insert Table~\ref*{tab:pilot} results once ViT-S/16 sweep completes.}
+
+\begin{table}[h]
+\centering
+\caption{ImageNet-100 pilot sweep, ViT-S/16, 100 epochs (placeholder).}
+\label{tab:pilot}
+\begin{tabular}{@{}lccccc@{}}
+\toprule
+Variant & Top-1 & Top-5 & $\Delta$ Overfit & Cache & Params \\
+\midrule
+QKV (baseline) & \todo{} & \todo{} & \todo{} & 100\% & \todo{} \\
+Q-K=V & \todo{} & \todo{} & \todo{} & 50\% & \todo{} \\
+Q=K-V\(^+\) & \todo{} & \todo{} & \todo{} & 50\% & \todo{} \\
+Q=K=V\(^+\) & \todo{} & \todo{} & \todo{} & 33\% & \todo{} \\
+QVV(3) & \todo{} & \todo{} & \todo{} & 50\% & \todo{} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{ImageNet-1k confirmatory run}
+\todo{Insert ViT-B/16 (and ViT-L/16, if run) results, mirroring
+Table~3 of \citet{gao2026keyless}.}
+
+\subsection{Detection transfer}
+\todo{Insert COCO AP table for backbone transfer experiment.}
+
+\section{Discussion}
+\label{sec:discussion}
+\todo{Fill in once results are available. Key questions to address:
+(1) does the ImageNet-scale accuracy gap match, exceed, or undercut the
+3.1\% LM-scale gap reported in \citet{kayyam2026three}; (2) does the
+overfitting-gap effect (H2) hold, and if so, is the magnitude comparable
+to the language-modeling result, where the 36-layer QVV(3) model showed a
+$\Delta$Overfit of 0.6866 vs.\ 0.8404 for standard attention; (3) does H3
+hold, i.e.\ is the symmetric-vs-asymmetric gap smaller in vision than in
+language; (4) does classification parity predict detection parity (H4), or
+does small-object AP reveal a localization cost not visible in top-1
+accuracy.}
+
+\section{Limitations}
+\label{sec:limitations}
+As with \citet{kayyam2026three}, our confirmatory ImageNet-1k runs use a
+compressed training schedule (100--150 epochs) rather than the full
+300-epoch DeiT recipe, for compute-budget reasons; this is standard
+practice for controlled ablation studies but means absolute accuracy
+numbers should not be compared directly to published SOTA ViT results
+trained with the full recipe or with ImageNet-21k pretraining. The
+ImageNet-100 pilot, used for variant selection, is not guaranteed to rank
+variants identically to full ImageNet-1k, though we treat any pilot-stage
+finding as provisional and validated only by the confirmatory run.
+ViT-L/16 results are included only if compute allows and should be
+treated as a secondary scaling check rather than a core claim.
+
+\section{Conclusion}
+\label{sec:conclusion}
+We have laid out a concrete experimental design to test whether
+projection-sharing attention --- validated at small-to-medium scale in
+\citet{kayyam2026three} and reframed and generalized via depth-\(m\)
+factorization in \citet{gao2026keyless} --- generalizes to large-scale
+vision transformers trained on ImageNet-1k, and whether the
+overfitting-reduction effect observed in language models is a general
+property of shared-projection attention or specific to causal language
+modeling. Results will be added to Section~\ref{sec:results} following
+completion of the pilot and confirmatory training runs described in
+Section~\ref{sec:setup}.
+
+\bibliographystyle{plainnat}
+\begin{thebibliography}{99}
+
+\bibitem[Ainslie et al.(2023)]{ainslie2023gqa}
+J.~Ainslie, J.~Lee-Thorp, M.~de~Jong, Y.~Zemlyanskiy, F.~Lebr\'on, and S.~Sanghai.
+\newblock GQA: Training generalized multi-query transformer models from multi-head checkpoints.
+\newblock In \emph{EMNLP}, 2023.
+
+\bibitem[Borji(2023)]{borji2023kv}
+A.~Borji.
+\newblock Key-value transformer.
+\newblock \emph{arXiv preprint arXiv:2305.19129}, 2023.
+
+\bibitem[DeepSeek-AI(2024)]{deepseek2024mla}
+DeepSeek-AI.
+\newblock DeepSeek-V2: A strong, economical, and efficient mixture-of-experts language model.
+\newblock \emph{arXiv preprint arXiv:2405.04434}, 2024.
+
+\bibitem[Dosovitskiy et al.(2021)]{dosovitskiy2021vit}
+A.~Dosovitskiy, L.~Beyer, A.~Kolesnikov, D.~Weissenborn, X.~Zhai, T.~Unterthiner, M.~Dehghani, M.~Minderer, G.~Heigold, S.~Gelly, J.~Uszkoreit, and N.~Houlsby.
+\newblock An image is worth 16x16 words: Transformers for image recognition at scale.
+\newblock In \emph{ICLR}, 2021.
+
+\bibitem[Gao and Xu(2026)]{gao2026keyless}
+X.~Gao and X.~Xu.
+\newblock Keyless attention: Value-space routing and value-only caching for efficient transformers.
+\newblock \emph{arXiv preprint arXiv:2606.21848}, 2026.
+
+\bibitem[Kayyam et al.(2026)]{kayyam2026three}
+A.~Kayyam, A.~Madan~Gopal, and M.~A.~Lewis.
+\newblock Do transformers need three projections? Systematic study of QKV variants.
+\newblock In \emph{Forty-third International Conference on Machine Learning (ICML)}, 2026.
+
+\bibitem[Lee et al.(2021)]{lee2021rethinking}
+J.~Lee et al.
+\newblock Rethinking query, key, and value embedding in vision transformer under tiny model constraints.
+\newblock \emph{arXiv preprint arXiv:2111.10017}, 2021.
+
+\bibitem[Liu et al.(2021)]{liu2021swin}
+Z.~Liu, Y.~Lin, Y.~Cao, H.~Hu, Y.~Wei, Z.~Zhang, S.~Lin, and B.~Guo.
+\newblock Swin transformer: Hierarchical vision transformer using shifted windows.
+\newblock In \emph{ICCV}, 2021.
+
+\bibitem[MASA(2025)]{masa2025}
+Anonymous.
+\newblock Share your attention: Transformer weight sharing via matrix-based dictionary learning.
+\newblock \emph{arXiv preprint arXiv:2508.04581}, 2025.
+
+\bibitem[Shazeer(2019)]{shazeer2019mqa}
+N.~Shazeer.
+\newblock Fast transformer decoding: One write-head is all you need.
+\newblock \emph{arXiv preprint arXiv:1911.02150}, 2019.
+
+\bibitem[Touvron et al.(2021)]{touvron2021deit}
+H.~Touvron, M.~Cord, M.~Douze, F.~Massa, A.~Sablayrolles, and H.~J\'egou.
+\newblock Training data-efficient image transformers \& distillation through attention.
+\newblock In \emph{ICML}, 2021.
+
+\bibitem[Vaswani et al.(2017)]{vaswani2017attention}
+A.~Vaswani, N.~Shazeer, N.~Parmar, J.~Uszkoreit, L.~Jones, A.~N.~Gomez, L.~Kaiser, and I.~Polosukhin.
+\newblock Attention is all you need.
+\newblock In \emph{NeurIPS}, 2017.
+
+\end{thebibliography}
+
+\end{document}
