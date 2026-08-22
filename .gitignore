@@ -13,6 +13,7 @@ __pycache__/
 # model checkpoints (released on the HF Hub, not tracked in git)
 checkpoints/
 checkpoints_llm/
+checkpoints_imagenet/*.pt
 
 # run logs
 *.log
