@@ -20,7 +20,7 @@ A Convex-Hull Constraint in Self-Attention}
 \maketitle
 
 \begin{abstract}
-\emph{Do Transformers Need Three Projections?} shows that a Q$\neq$K$=$V attention
+\emph{Do Transformers Need Three Projections?}~\cite{kayyam2025} shows that a Q$\neq$K$=$V attention
 variant, trained \emph{from scratch}, matches full QKV attention on a range of
 synthetic and vision tasks. This note asks a different question: what happens if K
 and V are tied \emph{after} training, by surgically merging an already-trained QKV
@@ -60,7 +60,17 @@ vision, \textsc{avg}-mode surgery reaches (and on CIFAR-10 slightly exceeds) the
 from-scratch tied baseline within 10 epochs, while \textsc{keep\_k} remains the one
 mode with a
 persistent, slow-converging gap -- consistent with the basis-mismatch account, since
-it is the mode with the most re-calibration to do. Our overarching point is not that
+it is the mode with the most re-calibration to do. A single confirmatory run at a
+scale closer to production pretraining -- a 300M-parameter language model trained on
+10B tokens of FineWeb-Edu -- replicates the same
+\textsc{avg}~$>$~\textsc{keep\_v}~$>$~\textsc{keep\_k} ordering in both zero-shot
+severity and post-distillation gap, and a cheap K/V-redundancy check (CKA) extends to
+that scale too. A content probe complicates the small-scale picture, though: unlike
+the synthetic/vision teachers, where $K$ and $V$ decoded token identity equally well,
+this teacher's $V$ probes consistently better than $K$ across all 20 layers (a modest
+but universal gap), closer to Corollary~\ref{cor:content}'s original content-loss
+story than the basis-mismatch account we favor at small scale. We did not repeat the
+random-$c_{kv}$ baseline or $\alpha$-sweep at that scale. Our overarching point is not that
 $K=V$ is fundamentally deficient: jointly training \texttt{Q}$\neq$\texttt{K=V} from
 scratch works fine (that is the base paper's headline result), and untying is trivial
 for the two tasks that never needed cross-token routing. The point is that
@@ -447,6 +457,100 @@ COPY are omitted: every mode, including all 5 random seeds, scores exactly $1.00
 \label{tab:randombaseline}
 \end{table}
 
+\textbf{Confirmation at language-model scale.} Everything above uses small models
+(1--2M-param vision ViTs, tiny sequence models) where a full $\alpha$-sweep and a
+5-seed random baseline are cheap. To check the collapse-and-recover pattern at a scale closer
+to production LLM pretraining, we repeat the core protocol -- QKV teacher, surgical
+tying, zero-shot eval, distillation recovery -- on the base paper's 300M-parameter
+GPT-style model, trained from scratch on 10B tokens of FineWeb-Edu
+(\texttt{outputs\_qkv\_baseline\_10B/final\_model.pt}, validation perplexity 20.82),
+against the base paper's matching from-scratch \texttt{Q}$\neq$\texttt{K=V} checkpoint
+(perplexity 21.28) as the tied ceiling. Distillation uses the same
+hard-label-CE + KL-vs.-teacher-soft-logits objective ($T{=}2$, equal weighting) as
+Tables~\ref{tab:synthetic}--\ref{tab:vision}, but for a 500M-token budget (about 5\% of
+the from-scratch pretraining budget, in the same spirit as the epoch budgets used
+above) rather than a fixed epoch count, since ``epoch'' is not a meaningful unit
+against a pretraining corpus far larger than the distillation budget itself.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+Mode & QKV teacher & Q$\neq$K=V (scratch) & Zero-shot surgery & Distilled (500M tok) \\
+\midrule
+keep\_k & 20.82 & 21.28 & 13345.19 & 29.00 \\
+keep\_v & 20.82 & 21.28 & 7347.14  & 27.00 \\
+avg     & 20.82 & 21.28 & 6430.36  & 22.87 \\
+\bottomrule
+\end{tabular}
+\caption{FineWeb-Edu language modeling (300M params, validation perplexity --
+lower is better, unlike the accuracy tables above). Causal next-token prediction is
+not a pointwise task in the sense of Section~\ref{sec:pointwise}: every position's
+prediction depends on routing information forward from earlier tokens, so
+Proposition~\ref{prop:hull} predicts collapse under $K=V$ tying, and zero-shot surgery
+confirms it dramatically -- perplexity worsens by two to three orders of magnitude
+(20.8 $\to$ 6{,}400--13{,}300) versus the roughly one-order-of-magnitude accuracy
+collapses in Tables~\ref{tab:synthetic}--\ref{tab:vision}, consistent with
+perplexity's exponential sensitivity to per-token log-loss rather than a qualitatively
+different failure mode. Distillation recovers all three modes to within 1.6--7.7
+perplexity points of the scratch-tied ceiling (\textsc{avg} closest, \textsc{keep\_k}
+furthest), reproducing the same
+\textsc{avg}~$>$~\textsc{keep\_v}~$>$~\textsc{keep\_k} ordering, by both zero-shot
+severity and post-distillation gap, seen in Table~\ref{tab:vision}.}
+\label{tab:llm}
+\end{table}
+
+The ranking replicates exactly. \textsc{avg} is again the safest zero-shot surgery and
+recovers closest to the tied ceiling (22.87 vs.\ 21.28, a 1.6-point gap after 500M
+distillation tokens), echoing \textsc{avg}/CIFAR-10's near-complete recovery in
+Table~\ref{tab:vision}; \textsc{keep\_k} is again both the worst zero-shot mode and the
+one with the largest residual gap after distillation (29.00 vs.\ 21.28), matching the
+persistent \textsc{keep\_k} gap already seen at vision scale (Section~
+\ref{sec:discussion}). The teacher's $K$/$V$ activation CKA -- cheap to measure, since
+it needs only a forward pass on held-out data and no retraining -- is $0.70$, squarely
+inside the range spanned by the 9 synthetic/vision teachers. Converting perplexity to a
+chance-normalized log-loss severity (Figure~\ref{fig:cka}'s caption gives the exact
+transform) places the LLM point within the same scatter around Figure~\ref{fig:cka}'s
+$n=9$ fit line as the other 9 points (residual $0.19$, in the same range as, e.g.,
+\textsc{fmnist}'s $0.14$ or REVERSE's $0.25$) despite not being part of it -- consistent
+with, though not a tight confirmation of, the CKA--severity relationship extending to a
+domain and scale neither of the original 9 points covers. We do not fold it into that
+figure's $r=-0.84$ correlation regardless, since the normalization is a different
+derivation from the other 9 points' raw accuracy drop, not a validated equivalent
+measure.
+
+A cheap, no-retraining content probe (same closed-form ridge-regression method as
+Section~\ref{sec:mechanism}, adapted for the 50{,}304-token vocabulary via an
+index-add accumulation in place of a dense one-hot target matrix, and with the ridge
+penalty scaled to the data's own diagonal energy rather than a fixed constant --
+this model's $K$/$V$ activations turn out to be severely rank-deficient, and a fixed
+ridge silently degenerates the closed-form solve into float32 noise at one layer if
+left unscaled) tells a different story from the synthetic/vision result, though.
+Averaged over the model's 20 layers, the probe recovers token identity from $v_j$
+noticeably better than from $k_j$ ($85.3\%$ vs.\ $80.3\%$ mean accuracy, a $5.0$-point
+gap on average, ranging from $1.7$ to $10.9$ points across layers, with $V$ ahead at
+every single one -- full per-layer numbers in
+\texttt{kv\_content\_probe\_llm\_results.csv}). At synthetic/vision scale, $K$ and $V$
+probed equally well, which is precisely what motivated moving away from
+Corollary~\ref{cor:content}'s original content-loss story toward the basis-mismatch
+account (Section~\ref{sec:mechanism}). Here, the LLM teacher's $K$ \emph{is}
+measurably harder to decode token identity from than $V$ -- closer to
+Corollary~\ref{cor:content} as originally stated. We read this as a genuine point of
+divergence rather than force it into the existing account: the gap is consistent in
+direction across every layer, but modest in size (both projections still probe well
+above 80\%), so it does not on its own settle whether basis-mismatch, partial
+content-loss, or both is the better description at this scale -- and, like the other
+single-point checks in this section, it comes from one held-out batch, not a
+bootstrapped or multi-seed estimate.
+
+We did not repeat the $\alpha$-sweep or random-$c_{kv}$ baseline
+(Section~\ref{sec:mechanism} onward) at this scale -- each would cost a multi-GPU-day
+training run per point here rather than the few seconds it takes at vision/synthetic
+scale -- so this result is best read as a
+single confirmatory data point on the headline collapse-and-recover pattern, not a
+full replication of the mechanistic analysis.
+
 \subsection{Testing the addressing/content mechanism directly}
 \label{sec:mechanism}
 
@@ -523,7 +627,15 @@ low CKA means they specialized (unsafe to tie).
 projections vs.\ the accuracy drop under K=V surgery (averaged over \textsc{keep\_k}
 and \textsc{keep\_v}), across all 5 synthetic tasks and 4 vision datasets.
 Pearson $r = -0.84$ ($n=9$); see text for why we do not treat this as a validated
-general predictor.}
+general predictor. The star marks the same measurement on the 300M-parameter
+FineWeb-Edu teacher (CKA $=0.70$), with its $y$-coordinate a chance-normalized
+log-loss severity in place of accuracy drop (Table~\ref{tab:llm} only gives
+perplexity, which has no shared scale with accuracy): $(\ell_{\text{surgery}} -
+\ell_{\text{teacher}}) / (\ln|V| - \ell_{\text{teacher}})$, where $\ell = \ln(\text{PPL})$
+and $\ln|V|$ is the cross-entropy of a uniform predictor over the vocabulary --
+the LM analogue of chance accuracy. Excluded from the fit regardless, since this is
+a different derivation from the other 9 points' raw accuracy drop, not a directly
+validated equivalent measure.}
 \label{fig:cka}
 \end{figure}
 
@@ -626,7 +738,20 @@ consistent with this than Corollary~\ref{cor:content} as originally stated: dist
 is not restoring content that \textsc{keep\_k} discarded (a linear probe shows the
 content was never gone), it is re-calibrating $c_{\text{proj}}$/MLP/head to a
 representation in an unfamiliar basis -- a harder fitting problem than the search-space
-argument alone would suggest.
+argument alone would suggest. The same asymmetry survives the jump from the 1.6M-param
+CIFAR ViT to a 389M-parameter language model trained from scratch on 10B tokens --
+more than two orders of magnitude more parameters, and a far larger, qualitatively
+different pretraining corpus (Table~\ref{tab:llm}): \textsc{keep\_k} is still the
+worst zero-shot mode and the one left furthest from the tied ceiling after a fixed
+distillation budget, which weighs against reading the vision-scale \textsc{keep\_k}
+gap as an artifact of the vision ViT being too small or CIFAR too little data for
+full re-calibration. The LLM's own content probe complicates this account rather than
+simply extending it, though (Section~\ref{sec:empirical}): unlike the synthetic/vision
+teachers, where $K$ and $V$ decoded token identity equally well, this teacher's $K$ is
+measurably (if modestly) harder to decode than $V$ at every layer -- some genuine
+content asymmetry may be present at this scale on top of the basis-mismatch effect,
+not instead of it, and we do not have a clean way from the current evidence to
+apportion \textsc{keep\_k}'s slow recovery between the two.
 
 \section{Related work}
 \label{sec:related}
@@ -706,11 +831,17 @@ sub-block -- not the whole network -- can then carry (Remark~\ref{rem:scope}).
 Where that ceiling ends up mattering turned out to need more than the mechanism we
 started with. Corollary~\ref{cor:content}'s original story -- $K$ addresses, $V$
 carries content, so $K$ should be the less content-decodable of the two -- does not
-survive a direct probe: $K$ and $V$ are equally linearly decodable
-(Section~\ref{sec:mechanism}). The evidence is more consistent with a more specific,
-basis-mismatch account than with Corollary~\ref{cor:content} as originally stated --
+survive a direct probe at synthetic/vision scale: $K$ and $V$ are equally linearly
+decodable there (Section~\ref{sec:mechanism}). The same probe at LLM scale complicates
+rather than confirms this: $K$ is measurably, if modestly, harder to decode than $V$
+at every layer of the 300M-parameter model (Section~\ref{sec:empirical}), closer to
+Corollary~\ref{cor:content} as originally stated -- so the content-loss and
+basis-mismatch accounts may both be partially right, at different scales or in
+different proportion, and we do not have the evidence to settle which. The evidence
+at small scale is more consistent with a more specific, basis-mismatch account than
+with Corollary~\ref{cor:content} as originally stated --
 though we have not directly measured downstream calibration to $K$ vs.\ $V$, so we
-offer this as the best-supported reading, not an established mechanism: measured
+offer this as the best-supported reading there, not an established mechanism: measured
 against a random-projection baseline's own 5-seed spread rather than
 a single number, \textsc{keep\_k} confers no detectable advantage over noise on most
 non-pointwise tasks and is dramatically worse on one (Table~\ref{tab:randombaseline}),
@@ -727,6 +858,35 @@ comparatively cheap and nearly-always-sufficient fix, with \textsc{keep\_k}
 consistently the slowest to recover -- which the basis-mismatch account predicts,
 since it is the mode with a genuinely unfamiliar representation to re-calibrate
 against, not merely a smaller one.
+
+\appendix
+
+\section{LLM distillation curves}
+\label{sec:appendix-llm-curves}
+
+Table~\ref{tab:llm} reports only the zero-shot and final-budget perplexity for the
+LLM-scale confirmation (Section~\ref{sec:empirical}); Figure~\ref{fig:llm-curves}
+shows the full recovery trajectory for all three surgery modes, in the same spirit
+as Figure~\ref{fig:curves} for the synthetic/vision runs.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{../distill_llm_curves.pdf}
+\caption{Left: training loss (hard-label CE + KD against the QKV teacher's soft
+logits) over the 500M-token distillation budget, parsed directly from the training
+logs (\texttt{distill\_llm\_\{keep\_k,keep\_v,avg\}.log}). Right: validation
+perplexity at the zero-shot point and each of the 5 evaluation checkpoints (log
+scale, given the roughly three-orders-of-magnitude range from zero-shot collapse to
+recovered perplexity), against the QKV teacher and from-scratch Q$\neq$K=V ceiling
+(dotted/dashed reference lines). All three modes make most of their recovery in the
+first 20\% of the budget and continue closing the gap to the ceiling gradually
+thereafter; \textsc{avg} and \textsc{keep\_v} track each other closely throughout,
+while \textsc{keep\_k} remains visibly separated from both at every checkpoint,
+consistent with its persistent gap in Table~\ref{tab:llm} and the slower,
+less-complete \textsc{keep\_k} recovery already seen at synthetic/vision scale
+(Figure~\ref{fig:curves}).}
+\label{fig:llm-curves}
+\end{figure}
 
 \begin{thebibliography}{9}
 \bibitem{kayyam2025} A. Kayyam et al. \emph{Do Transformers Need Three Projections?}

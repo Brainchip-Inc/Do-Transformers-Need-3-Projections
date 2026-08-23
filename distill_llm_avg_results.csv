@@ -1,0 +1,2 @@
+mode,teacher_ppl,scratch_qkv_kv_ppl,zero_shot_surgery_ppl,distill_point1_ppl,distill_point2_ppl,distill_point3_ppl,distill_point4_ppl,distill_point5_ppl
+avg,20.8183,21.2798,6430.3611,25.3322,23.8467,23.3014,23.0077,22.8702

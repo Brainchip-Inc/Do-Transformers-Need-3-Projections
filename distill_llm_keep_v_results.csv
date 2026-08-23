@@ -1,0 +1,2 @@
+mode,teacher_ppl,scratch_qkv_kv_ppl,zero_shot_surgery_ppl,distill_point1_ppl,distill_point2_ppl,distill_point3_ppl,distill_point4_ppl,distill_point5_ppl
+keep_v,20.8183,21.2798,7347.1366,44.2369,32.3987,28.8783,27.5322,26.9988
