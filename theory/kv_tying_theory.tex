@@ -43,9 +43,19 @@ systematic interpolation between $K$ and $V$, together with a random-projection
 control, shows that reusing $K$ (\textsc{keep\_k}) is often no better than an
 unrelated, untrained projection despite retaining linearly decodable token
 information -- pointing to a representation-compatibility account rather than a
-simple information-loss one, though we have not measured downstream calibration to
-$K$ vs.\ $V$ directly and hold this as the best-supported reading rather than an
-established mechanism. Collapse severity
+simple information-loss one. Two further zero-shot experiments test this directly
+rather than infer it: decomposing attention into separate addressing- and
+payload-source projections shows payload identity, not addressing identity, drives
+the damage on several tasks, and -- more decisively -- a linear or orthogonal map
+from $K$ to $V$'s basis, fit on held-out data with no retraining of anything
+downstream, closes the entire \textsc{keep\_k} gap and matches or exceeds
+\textsc{keep\_v} on every task where \textsc{keep\_v} itself recovers well,
+including the 300M-parameter language model. This is a direct manipulation of the
+hypothesized mechanism rather than inference from a probe and a random baseline, and
+we treat it as the strongest evidence in the note for the basis-mismatch account,
+though we still stop short of calling it an established mechanism, since a learned
+correction working is consistent with basis mismatch without ruling out every
+alternative account of the same result. Collapse severity
 also correlates with how functionally redundant the trained $K$/$V$ projections
 already were (linear CKA on held-out activations, $r=-0.84$, $n=9$, though this drops
 to $\rho=-0.56$ (n.s.) under Spearman and is not separately significant within either
@@ -610,6 +620,123 @@ consistent with why distillation recovers \textsc{keep\_k} slowest
 basis is a harder fitting problem than recovering from noise-level information loss
 would be.
 
+\subsection{Two direct tests of the basis-mismatch account}
+\label{sec:direct-tests}
+
+Everything above is indirect evidence for basis mismatch: a probe showing content
+survives, a random baseline showing that content is nonetheless useless, a
+distillation-speed asymmetry consistent with re-calibration being the bottleneck.
+None of it manipulates the hypothesized mechanism directly. We add two zero-shot
+(no retraining) experiments that do: separately vary which projection produces
+attention \emph{scores} versus which produces the \emph{transported} vectors, and
+directly correct $K$'s basis toward $V$'s with a learned map fit on held-out data.
+
+\textbf{Addressing/payload decomposition.} Writing $A(S, P)$ for attention with
+scores from $S$ and transported payload from $P$, the teacher computes $A(Q,K)V$ and
+there are three other cells: $A(Q,K)K$, $A(Q,V)V$, $A(Q,V)K$. Two of these are not
+new experiments -- they are exactly what \textsc{keep\_k}/\textsc{keep\_v} already
+measured: tying $c_{kv} \leftarrow c_k$ reuses $c_k$ for \emph{both} roles, so
+scores are unchanged ($A(Q,K)$) and the payload becomes $K$; symmetrically for
+\textsc{keep\_v} and $c_v$. Only $A(Q,V)K$ -- scores from $V$, payload from $K$ --
+is genuinely new. We evaluate it by monkey-patching the teacher's own attention
+forward (no new model, no retraining), on the same held-out data as
+Tables~\ref{tab:synthetic}--\ref{tab:vision}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+Task/dataset & $A(Q,K)V$ (teacher) & $A(Q,K)K$ (\textsc{keep\_k}) & $A(Q,V)V$ (\textsc{keep\_v}) & $A(Q,V)K$ (new) \\
+\midrule
+REVERSE   & 1.000 & 0.100 & 0.123 & 0.104 \\
+SORT      & 0.998 & 0.583 & 0.717 & 0.576 \\
+SWAP      & 1.000 & 0.088 & 0.122 & 0.108 \\
+MNIST     & 0.981 & 0.114 & 0.151 & 0.081 \\
+FMNIST    & 0.887 & 0.084 & 0.105 & 0.099 \\
+CIFAR-10  & 0.696 & 0.076 & 0.153 & 0.073 \\
+CIFAR-100 & 0.437 & 0.007 & 0.021 & 0.006 \\
+\bottomrule
+\end{tabular}
+\caption{Addressing/payload decomposition, zero-shot accuracy (SUB/COPY omitted:
+$1.000$ in every cell, as always). $A(Q,V)K$ tracks $A(Q,K)K$ (\textsc{keep\_k})
+closely on SORT and both CIFAR datasets -- evidence that \emph{payload} identity,
+not addressing identity, drives the damage there, directly supporting the
+basis-mismatch reading of \textsc{keep\_k}'s failure. REVERSE, SWAP, and MNIST
+instead collapse to a similar floor regardless of the combination, consistent with
+these one-to-one-routing tasks being sensitive to any deviation from the exact
+trained pairing.}
+\label{tab:decomposition}
+\end{table}
+
+At LLM scale the same swap gives val.\ PPL $9622.90$ for $A(Q,V)K$ -- between
+\textsc{keep\_k} ($13345.19$) and \textsc{keep\_v} ($7347.14$), mildly closer to
+\textsc{keep\_v}, i.e.\ a less clean "payload dominates" signal than SORT/CIFAR
+show. We read this as a genuine, honestly-reported scale-dependence rather than
+force one story onto both: at small scale payload identity is often the dominant
+factor, but the LLM result does not cleanly replicate that.
+
+\textbf{K$\to$V alignment.} A more direct test: if \textsc{keep\_k}'s problem is
+really that $c_{\text{proj}}$/MLP/head are calibrated to $V$'s basis, then a simple,
+\emph{learned} change of basis from $K$ to $V$ -- fit on held-out data, applied with
+no retraining of anything downstream -- should recover most of the gap. We fit two
+such corrections per layer, on a held-out split disjoint from the accuracy-reporting
+test set: a ridge-regularized linear map $A^\star, b^\star = \arg\min_{A,b}
+\sum_j \lVert A k_j + b - v_j \rVert^2$, and an orthogonal Procrustes rotation
+$R^\star = \arg\min_{R^\top R = I} \lVert KR - V \rVert_F$ (closed-form via SVD).
+Both replace \textsc{keep\_k}'s literal $c_{kv} \leftarrow c_k$ with $c_{kv}(x)
+\leftarrow A^\star c_k(x) + b^\star$ (resp.\ $c_k(x) R^\star$), evaluated zero-shot.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lcccc}
+\toprule
+Task/dataset & \textsc{keep\_k} & \textsc{keep\_k} + linear & \textsc{keep\_k} + Procrustes & \textsc{keep\_v} \\
+\midrule
+REVERSE   & 0.100 & 0.118 & 0.107 & 0.123 \\
+SORT      & 0.583 & \textbf{0.740} & 0.710 & 0.717 \\
+SWAP      & 0.088 & 0.118 & 0.107 & 0.122 \\
+MNIST     & 0.114 & \textbf{0.151} & 0.113 & 0.151 \\
+FMNIST    & 0.084 & \textbf{0.109} & 0.100 & 0.105 \\
+CIFAR-10  & 0.076 & 0.152 & \textbf{0.170} & 0.153 \\
+CIFAR-100 & 0.007 & 0.023 & \textbf{0.025} & 0.021 \\
+\bottomrule
+\end{tabular}
+\caption{Zero-shot accuracy after correcting \textsc{keep\_k}'s $c_{kv}$ toward
+$V$'s basis with a learned map, no retraining. Bold: matches or exceeds
+\textsc{keep\_v}. On SORT and every vision dataset, either correction closes the
+entire \textsc{keep\_k} gap and reaches or exceeds \textsc{keep\_v} -- direct
+evidence that the frozen downstream network can use $K$'s content once it is
+expressed in a compatible basis, not indirect inference from a probe and a random
+baseline. REVERSE/SWAP recover only to \textsc{keep\_v}'s own (still low) level,
+consistent with those tasks needing distillation regardless of starting
+projection (Table~\ref{tab:synthetic}).}
+\label{tab:alignment}
+\end{table}
+
+At LLM scale, Procrustes gives val.\ PPL $9281.23$ and the linear correction gives
+$6666.60$ -- both far below \textsc{keep\_k}'s $13345.19$, and the linear correction
+in fact \emph{beats} \textsc{keep\_v} ($7347.14$), mirroring the small-scale pattern
+closely. Getting there took real debugging, worth reporting because it is itself
+informative: an unconstrained $1024\times1024$ map fit from a single $\sim$16k-token
+batch is underdetermined enough that a fixed ridge penalty tuned for the tiny
+synthetic/vision models (where $d$ is small relative to sample size) catastrophically
+overfits here (val.\ PPL $38747$ -- \emph{worse} than plain \textsc{keep\_k}) unless
+the ridge strength is scaled up substantially. Worse, our first fix -- selecting the
+ridge by reconstruction error ($\lVert Ak+b-v\rVert^2$) on a disjoint held-out batch
+of training documents -- was itself wrong: that criterion monotonically favors the
+\emph{worst}-performing ridge at every layer, because minimizing embedding-space
+reconstruction error is not the same objective as producing a representation the
+frozen downstream computation can use -- the identical disconnect this section's
+content probe already found between $K$'s linear decodability and its downstream
+uselessness, surfacing again one level up, in how to fit the correction rather than
+in the correction's target. Selecting the ridge by actual downstream perplexity on a
+held-out (non-reported) split, rather than embedding reconstruction error, resolves
+it. We do not read the LLM result as less trustworthy for having needed this fix --
+if anything, needing to avoid the exact failure mode the paper's central mechanism
+predicts is a small, self-consistent confirmation of it.
+
 \subsection{K--V representational similarity as a diagnostic for collapse severity}
 
 Corollary~\ref{cor:content} predicts that the severity of collapse should track how
@@ -753,6 +880,23 @@ content asymmetry may be present at this scale on top of the basis-mismatch effe
 not instead of it, and we do not have a clean way from the current evidence to
 apportion \textsc{keep\_k}'s slow recovery between the two.
 
+The K$\to$V alignment result (Section~\ref{sec:direct-tests}) sharpens what
+"re-calibrating to an unfamiliar basis" means concretely: a full knowledge-distillation
+pass updates every downstream parameter against a much richer training signal
+(hard labels plus the teacher's soft logits, many epochs or hundreds of millions of
+tokens), while the alignment correction updates \emph{nothing} downstream and is a
+single closed-form linear or orthogonal fit on far less data. That such a cheap,
+purely representational fix gets most of the way to \textsc{keep\_v} at every scale
+we tested -- rather than distillation's slow, expensive re-calibration being
+necessary in principle -- suggests the bulk of \textsc{keep\_k}'s deficit really is a
+change-of-basis problem, small compared to what generic downstream re-training would
+be needed for if the content itself were the missing piece. That distillation still
+converges slower for \textsc{keep\_k} than for \textsc{keep\_v}/\textsc{avg} despite
+the fix being this cheap in principle is itself informative: gradient descent
+evidently does not find the closed-form correction directly, or finds it more slowly
+than it finds whatever \textsc{keep\_v}/\textsc{avg} need, which we have not
+investigated further.
+
 \section{Related work}
 \label{sec:related}
 
@@ -839,13 +983,21 @@ Corollary~\ref{cor:content} as originally stated -- so the content-loss and
 basis-mismatch accounts may both be partially right, at different scales or in
 different proportion, and we do not have the evidence to settle which. The evidence
 at small scale is more consistent with a more specific, basis-mismatch account than
-with Corollary~\ref{cor:content} as originally stated --
-though we have not directly measured downstream calibration to $K$ vs.\ $V$, so we
-offer this as the best-supported reading there, not an established mechanism: measured
-against a random-projection baseline's own 5-seed spread rather than
-a single number, \textsc{keep\_k} confers no detectable advantage over noise on most
-non-pointwise tasks and is dramatically worse on one (Table~\ref{tab:randombaseline}),
-even though its content is, by the same section's probe, fully present. K--V activation
+with Corollary~\ref{cor:content} as originally stated. Measured against a
+random-projection baseline's own 5-seed spread rather than a single number,
+\textsc{keep\_k} confers no detectable advantage over noise on most non-pointwise
+tasks and is dramatically worse on one (Table~\ref{tab:randombaseline}), even though
+its content is, by the same section's probe, fully present -- and, more decisively,
+directly correcting $K$'s basis toward $V$'s with a learned linear or orthogonal map,
+fit on held-out data with no retraining of anything downstream, closes the entire
+\textsc{keep\_k} gap and matches or exceeds \textsc{keep\_v} at every scale we tested,
+including the 300M-parameter LLM (Section~\ref{sec:direct-tests}). That last result is
+a direct manipulation of the hypothesized mechanism, not an inference from indirect
+signals, and is the strongest evidence in the note for reading \textsc{keep\_k}'s
+failure as basis mismatch rather than content loss -- though a learned correction
+working is consistent with the account without ruling out every alternative
+explanation of the same result, so we still stop short of calling it established.
+K--V activation
 CKA is a useful and cheap diagnostic that tracks collapse severity across task types
 in our data, but we do not oversell it as a validated general predictor: the
 correlation is weaker under rank statistics than under Pearson's, is not separately

@@ -1,0 +1,10 @@
+domain,task_or_dataset,keep_k,keep_k_aligned,keep_k_procrustes,keep_v
+synthetic,REVERSE,0.1,0.1182,0.1072,0.1226
+synthetic,SORT,0.583,0.7397,0.7097,0.717
+synthetic,SUB,1.0,1.0,1.0,1.0
+synthetic,SWAP,0.0879,0.1178,0.1067,0.1223
+synthetic,COPY,1.0,1.0,1.0,1.0
+vision,mnist,0.1143,0.1509,0.113,0.1511
+vision,fmnist,0.0835,0.1085,0.0995,0.1047
+vision,cifar10,0.076,0.1524,0.1703,0.1525
+vision,cifar100,0.0067,0.0229,0.025,0.0214

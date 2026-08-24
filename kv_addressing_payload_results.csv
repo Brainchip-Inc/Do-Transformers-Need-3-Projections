@@ -1,0 +1,10 @@
+domain,task_or_dataset,"A(Q,K)V_teacher","A(Q,K)K_keep_k","A(Q,V)V_keep_v","A(Q,V)K_new"
+synthetic,REVERSE,1.0,0.1,0.1226,0.1037
+synthetic,SORT,0.9975,0.583,0.717,0.5762
+synthetic,SUB,1.0,1.0,1.0,1.0
+synthetic,SWAP,1.0,0.0879,0.1223,0.1076
+synthetic,COPY,1.0,1.0,1.0,1.0
+vision,mnist,0.9814,0.1143,0.1511,0.081
+vision,fmnist,0.8874,0.0835,0.1047,0.099
+vision,cifar10,0.6959,0.076,0.1525,0.0734
+vision,cifar100,0.4374,0.0067,0.0214,0.0063
