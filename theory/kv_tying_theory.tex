@@ -737,6 +737,51 @@ it. We do not read the LLM result as less trustworthy for having needed this fix
 if anything, needing to avoid the exact failure mode the paper's central mechanism
 predicts is a small, self-consistent confirmation of it.
 
+\textbf{What does the correction actually do?} Table~\ref{tab:alignment} shows the
+correction works; it does not say what changes. We check directly by computing
+activation CKA between the corrected $K$ and the (untouched) $V$ on held-out data
+disjoint from whatever the map was fit on. Averaged over layers, the linear map
+raises CKA($K$,$V$) from a baseline of $0.73$ to $0.99$ at synthetic/vision scale, and
+from $0.69$ to $0.92$ at LLM scale -- essentially saturating the similarity measure.
+Procrustes, by contrast, moves it far less ($0.73 \to 0.76$ small-scale, $0.69 \to
+0.72$ at LLM scale), despite recovering comparable or better zero-shot accuracy in
+Table~\ref{tab:alignment} (e.g.\ Procrustes beats the linear map outright on CIFAR-10
+and CIFAR-100). Representational similarity and functional recovery are evidently not
+the same axis here: an orthogonal rotation barely nudges $K$ toward looking like $V$
+in CKA terms, yet unlocks most of the same downstream performance. The unconstrained
+linear map's own singular values are informative about why it reaches such high CKA:
+their mean is well below 1 (synthetic/vision: $0.33$; LLM: $0.016$, with a similarly
+small standard deviation) rather than clustered near 1 as a near-rotation would be --
+the fit is not finding a change of basis so much as aggressively projecting onto and
+rescaling a small number of directions, more so at LLM scale than at synthetic/vision
+scale. This is consistent with the useful $K \to V$ relationship living in a
+comparatively low-dimensional subspace rather than requiring the map's full rank.
+
+\textbf{Does joint training's shared projection resemble $K$, $V$, or neither?}
+A different question than anything above: what does the \emph{from-scratch}
+\texttt{Q}$\neq$\texttt{K=V} model's single learned $c_{kv}$ actually look like,
+relative to the independently-trained teacher's $K$ and $V$? A priori this could go
+either way -- joint training might converge toward one of the two roles, or find a
+genuinely different synthesis neither resembles. At synthetic/vision scale the answer
+is unhelpfully mixed: across 9 tasks/datasets (18 layer-level comparisons), $c_{kv}$
+is closer to $K$ in 7 and closer to $V$ in 11, with no consistent pattern by task type
+or layer depth, and is sometimes \emph{less} similar to either than $K$ and $V$ are to
+each other (e.g.\ REVERSE layer 1: teacher's own $K$--$V$ CKA is $0.82$, while
+$c_{kv}$'s CKA to each is only $0.45$ and $0.48$) -- consistent with joint training
+finding its own synthesis rather than approximating either independently-trained
+projection. At LLM scale the picture is more consistent, and points the other way
+from what the \textsc{keep\_v}-favoring results above might suggest: $c_{kv}$ is
+closer to the teacher's $K$ than to $V$ in 16 of 20 layers (mean CKA $0.79$ vs.\
+$0.67$). We read this as informative but not contradictory: a $K$-like representation
+works fine in the scratch model because every downstream weight co-adapted to it
+during training, while the identical representation is what fails catastrophically
+under \textsc{keep\_k} precisely because nothing downstream is allowed to adapt --
+the paper's central distinction (post-hoc merging vs.\ joint constraint,
+Section~\ref{sec:setup}) applies to \emph{which representation ends up shared}, not
+just to the direction of transfer. We do not have an account for why the LLM shows a
+consistent bias where the small-scale models don't, and flag it as an open question
+rather than force a reading onto it.
+
 \subsection{K--V representational similarity as a diagnostic for collapse severity}
 
 Corollary~\ref{cor:content} predicts that the severity of collapse should track how
