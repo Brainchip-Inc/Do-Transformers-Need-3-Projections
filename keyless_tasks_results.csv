@@ -1,0 +1,7 @@
+task,variant,accuracy
+INDUCTION,QKV,0.241
+INDUCTION,Keyless,0.254
+INDUCTION,DynamicKeyless,0.248
+ASSOC_RECALL,QKV,0.9995
+ASSOC_RECALL,Keyless,0.35
+ASSOC_RECALL,DynamicKeyless,0.353

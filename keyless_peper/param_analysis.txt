@@ -1,0 +1,70 @@
+Here is the exact parameter breakdown comparing **Track 1 (Amortized / Dynamic Keyless Attention)** to the standard **Gao (2026)** Keyless Attention baseline.
+
+---
+
+### Parameter Formula Comparison per Layer (Single Head)
+
+Let:
+
+* $d$: Hidden dimension of the Transformer model (e.g., 2048)
+* $d_h$: Head projection dimension for Queries (e.g., 64 or 128)
+* $d_v$: Head projection dimension for Values (e.g., 64 or 128)
+* $r$: Bottleneck rank for the dynamic hypernetwork generator $g(\cdot)$ (typically $r \ll d_h$, e.g., $r \in \{8, 16\}$)
+
+---
+
+### Detailed Parameter Breakdown
+
+| Model / Mechanism | Sequence Projections | Static Weight Matrices | Dynamic Generator / Amortizer | Total Weight Parameters per Head |
+| --- | --- | --- | --- | --- |
+| **Standard QKV Attention** | $W_Q, W_K, W_V \in \mathbb{R}^{d \times d_h}$ | None | None | $2 \cdot d \cdot d_h + d \cdot d_v$ |
+| **Gao (2026) Keyless Attention** | $W_Q \in \mathbb{R}^{d \times d_h}, W_V \in \mathbb{R}^{d \times d_v}$ | $W_R \in \mathbb{R}^{d_h \times d_v}$ | None | $d \cdot d_h + d \cdot d_v + (d_h \cdot d_v)$ |
+| **Track 1: Dynamic $W_R(x_i)$** | $W_Q \in \mathbb{R}^{d \times d_h}, W_V \in \mathbb{R}^{d \times d_v}$ | $U_R \in \mathbb{R}^{d_h \times r}, V_R \in \mathbb{R}^{d_v \times r}$ | $W_{\text{gate}} \in \mathbb{R}^{d_h \times r}$ | $d \cdot d_h + d \cdot d_v + r \cdot (d_h + d_v + d_h)$ |
+
+---
+
+### Quantitative Comparison (Concrete Example)
+
+Assume standard Llama-style head parameters:
+
+* $d_h = 128$, $d_v = 128$
+* Hidden size $d = 2048$ (16 heads per layer)
+* Dynamic Rank $r = 16$
+
+#### 1. Per-Head Weight Parameter Count
+
+* **Gao (2026) Static $W_R$:**
+
+$$\text{Params}_{\text{Gao}} = (2048 \times 128) + (2048 \times 128) + (128 \times 128) = 262,144 + 262,144 + 16,384 = \mathbf{540,672\text{ params}}$$
+
+
+* **Track 1 Dynamic $W_R(x_i)$:**
+
+$$\text{Params}_{\text{Track 1}} = \underbrace{262,144}_{W_Q} + \underbrace{262,144}_{W_V} + \underbrace{(128 \times 16)}_{U_R} + \underbrace{(128 \times 16)}_{V_R} + \underbrace{(128 \times 16)}_{W_{\text{gate}}}$$
+
+
+$$\text{Params}_{\text{Track 1}} = 524,288 + 2,048 + 2,048 + 2,048 = \mathbf{530,432\text{ params}}$$
+
+
+
+---
+
+### Key Findings & Insights
+
+1. **Track 1 Introduces Negligible or Even FEWER Parameters than Gao (2026):**
+* Static $W_R$ in Gao requires full $d_h \times d_v = 128 \times 128 = \mathbf{16,384\text{ parameters}}$ per head.
+* Dynamic factorized $W_R(x_i)$ with rank $r=16$ requires $r \cdot (2 d_h + d_v) = 16 \times 384 = \mathbf{6,144\text{ parameters}}$ per head.
+* **Result:** Track 1 actually uses **$\sim 10,000$ FEWER parameters per head** than Gao while transforming $W_R$ into a context-conditioned dynamic operator.
+
+
+2. **Zero Extra KV-Cache Overhead During Inference:**
+* Crucially, Track 1 does **not** add any sequence-length-dependent cached tensors ($N \times d_k$).
+* The generation of $\text{diag}(g(x_i))$ occurs on-the-fly per query token during decode time, leaving the KV-cache **100% Value-Only** ($N \times d_v$).
+
+
+3. **Relative Increase vs. Projection Dimensions:**
+* Compared to the base projection weights ($W_Q, W_V$), the dynamic generator introduces an overhead of **less than $1.1\%$** of total layer parameters.
+
+
+
+---

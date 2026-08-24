@@ -6,6 +6,8 @@ fineweb_edu_train/
 fineweb_edu_validation/
 smoke_fineweb_train/
 smoke_fineweb_validation/
+wikitext103_train/
+wikitext103_validation/
 outputs*/
 
 # python caches

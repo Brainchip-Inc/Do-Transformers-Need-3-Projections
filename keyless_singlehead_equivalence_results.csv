@@ -1,0 +1,9 @@
+n_head,variant,seed,accuracy
+1,QKV,0,1.0
+1,Keyless,0,1.0
+1,Keyless,1,1.0
+1,Keyless,2,1.0
+4,QKV,0,0.9995
+4,Keyless,0,0.35
+4,Keyless,1,0.368
+4,Keyless,2,0.3415

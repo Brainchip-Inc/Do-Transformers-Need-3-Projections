@@ -1,0 +1,236 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsfonts,amsthm}
+\usepackage{booktabs}
+\usepackage{geometry}
+\usepackage{hyperref}
+\usepackage{microtype}
+\usepackage{xcolor}
+
+\geometry{margin=1in}
+\hypersetup{colorlinks=true, linkcolor=blue, citecolor=blue, urlcolor=blue}
+
+\newtheorem{theorem}{Theorem}
+\newtheorem{lemma}{Lemma}
+\newtheorem{hypothesis}{Hypothesis}
+
+\title{\textbf{Beyond $QKV$: Minimal and Dynamic Projection Space Bottlenecks in Transformers}\\
+\large A Research Plan for ICLR}
+\author{\textbf{Research Proposal}}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Recent advances in efficient attention mechanisms, notably Keyless Attention, demonstrate that standard Key projections ($W_K$) can be eliminated by routing queries directly through a static transformation in Value space. However, foundational questions remain regarding the expressivity bounds, head interaction models, and extreme limits of projection reduction. This document presents a comprehensive, structured research plan detailing three high-impact tracks: (1) Amortized/Dynamic Keyless Attention, (2) Multi-Head Joint Routing via Cross-Head Transformations, and (3) Extreme Single-Projection Attention.
+\end{abstract}
+
+\section{Introduction \& Overall Objectives}
+Standard Multi-Head Attention (MHA) relies on three sequence-cached projection matrices ($W_Q, W_K, W_V \in \mathbb{R}^{d \times d_h}$). While effective, storing both $K$ and $V$ tensors during decoding imposes severe memory bandwidth bottlenecks. Keyless Attention proves that a static routing matrix $W_R \in \mathbb{R}^{d_h \times d_v}$ can bridge $Q$ and $V$, reducing Key-Value (KV) cache storage by $50\%$.
+
+This project explores the theoretical limits and practical enhancements of value-space routing across three complementary research tracks:
+\begin{enumerate}
+    \item \textbf{Track 1:} Dynamic, context-conditioned routing transformations $W_R(x_i)$ to recover expressivity on complex sequential tasks.
+    \item \textbf{Track 2:} Cross-head value-routing matrices $W_R^{\text{global}}$ to eliminate inter-head structural redundancy.
+    \item \textbf{Track 4:} Extreme projection compression, proving the bounds of single-projection attention ($Z = X W_Z$).
+\end{enumerate}
+
+---
+
+\section{Track 1: Amortized Keyless Attention (Dynamic Context-Conditioned $W_R$)}
+
+\subsection{Motivation \& Mathematical Formulation}
+Static Keyless Attention employs a constant matrix $W_R \in \mathbb{R}^{d_h \times d_v}$ per head. While memory-efficient, $W_R$ cannot adapt its subspace alignment dynamically based on input context. We propose parameterizing $W_R$ as a rank-$r$ dynamic operator amortized over the query state $q_i = x_i W_Q$:
+
+\begin{equation}
+W_R(x_i) = U_R \cdot \text{diag}\left(g(x_i W_Q)\right) \cdot V_R^\top
+\end{equation}
+
+where $U_R \in \mathbb{R}^{d_h \times r}$, $V_R \in \mathbb{R}^{d_v \times r}$, and $g: \mathbb{R}^{d_h} \to \mathbb{R}^r$ is a lightweight linear function or two-layer MLP. The pre-softmax logit score between query token $i$ and keyless token $j$ becomes:
+
+\begin{equation}
+S_{i,j} = \frac{1}{\sqrt{d_h}} \left( x_i W_Q \right) W_R(x_i) \left( x_j W_V \right)^\top
+\end{equation}
+
+\subsection{Hypotheses}
+\begin{hypothesis}[H1.1]
+Static $W_R$ models suffer performance degradation on multi-hop associative recall and long-context needle-in-a-haystack tasks due to static subspace alignment constraints.
+\end{hypothesis}
+\begin{hypothesis}[H1.2]
+Dynamic rank-$r$ parameterization $W_R(x_i)$ recovers full $QKV$ routing expressivity while maintaining a strict $100\%$ Value-Only Cache footprint.
+\end{hypothesis}
+
+\subsection{Experimental Execution}
+\begin{itemize}
+    \item \textbf{Synthetics:} Passkey retrieval, induction head formation, multi-query associative recall.
+    \item \textbf{Pre-training:} 350M and 1.3B models trained on 50B tokens of SlimPajama.
+    \item \textbf{Baselines:} Standard $QKV$ MHA, Static Keyless Attention, Multi-Query Attention (MQA), Grouped-Query Attention (GQA).
+\end{itemize}
+
+\subsection{Preliminary Results}
+\label{sec:track1-prelim}
+
+A small-scale synthetic pilot (\texttt{keyless\_tasks.py}: 2-layer, 128-dim
+encoders, single seed) tests H1.1/H1.2 directly before committing to the
+350M/1.3B pre-training sweep above. Two tasks were implemented: associative
+recall (unique key--value pairs, then a repeated-key query; standard
+Based/Zoology-style diagnostic) and induction heads (a bigram recurs later in
+the sequence). The induction task did not reach a trustworthy baseline --
+even the full $QKV$ model plateaus around 41\% regardless of model size,
+data, or training budget, most likely because induction-head formation is
+normally studied in causal decoder-only models and does not transfer cleanly
+to this synthetic harness's non-causal, single-scored-position encoder; it
+needs a causal reformulation before its numbers mean anything and is
+excluded below.
+
+Associative recall gave a clean, trustworthy result ($QKV$ reaches
+near-ceiling, confirming the task itself is well-posed):
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lc}
+\toprule
+Variant & Accuracy \\
+\midrule
+$QKV$ (baseline) & 0.9995 \\
+Static Keyless & 0.350 \\
+Dynamic Keyless (rank 8--64) & 0.348--0.363 \\
+\bottomrule
+\end{tabular}
+\caption{Associative recall, 2-layer/128-dim encoder, single seed.}
+\end{table}
+
+\textbf{H1.1 is confirmed}: static keyless collapses relative to $QKV$ on this
+content-addressed task. \textbf{H1.2, as formulated, is not supported}: sweeping
+the dynamic operator's rank from 8 to 64, and separately sweeping depth from
+2 to 4 layers, left accuracy flat at $\approx$0.35--0.37 for both keyless
+variants -- ruling out both capacity and compositional depth as the limiting
+factor for $W_R(x_i) = U_R\,\mathrm{diag}(g(x_iW_Q))\,V_R^\top$ specifically.
+
+A follow-up diagnostic (not part of the original plan, added to explain the
+above) isolates why: both keyless variants always route the attention score
+through $V$ itself ($S_{ij}$ is some function of $v_j$ in every case), so
+addressing and payload are never independently representable, no matter how
+$W_R$ is parameterized. Replacing the score computation with a genuinely
+independent (but still low-rank, hence still far cheaper to cache than a full
+$K$) key projection produces a sharp transition: rank $\le$ 20 stays near
+keyless's $\approx$0.35--0.40 ceiling, while rank $\ge$ 24 recovers
+near-$QKV$ accuracy (0.99+) at most seeds tried, with some run-to-run
+inconsistency exactly at the boundary (rank 30 dropped back to 0.46 in one
+run) consistent with an optimization phase transition -- the model either
+discovers the right circuit or gets stuck on a shortcut -- rather than a
+smooth capacity curve; this boundary was checked at a single seed per rank
+and needs multi-seed confirmation before being taken as precise. The
+qualitative conclusion is nonetheless clear: \emph{independence from $V$},
+not merely more parameters or depth, is what static/dynamic keyless attention
+is missing.
+
+\textbf{This has a direct theoretical explanation in Gao \& Xu's own paper}
+(``Keyless Attention: Value-Space Routing and Value-Only Caching for
+Efficient Transformers,'' arXiv:2606.21848), which this project builds on.
+Their Theorem 1 proves that \emph{single-head} keyless attention is an exact
+reparameterization of standard attention whenever $W^V$ is invertible
+($\tilde{W}^Q = W^Q(W^K)^\top(W^V)^{-\top}$) -- no expressivity loss in
+principle. Theorem 2 extends this to the multi-head case, but only under an
+additional subspace condition, $\mathrm{col}(\Omega_h^\top) \subseteq
+\mathrm{col}(W^V_h)$, that is not automatically satisfied by training. We
+tested this directly on associative recall: single-head ($N_h{=}1$) static
+keyless attention reaches $1.0000$ accuracy, exactly matching $QKV$ ($1.0000$),
+across 3 seeds with zero exceptions -- a clean empirical confirmation of
+Theorem 1. The identical model with $N_h{=}4$ heads (same total parameters,
+just split across heads) collapses to $0.34$--$0.37$ across the same 3 seeds,
+while $QKV$ at $N_h{=}4$ still solves it ($0.9995$+). The failure mode
+identified above is therefore not a defect of keyless attention per se, but
+specifically of \emph{multi-head} keyless attention failing to satisfy
+Theorem 2's subspace condition in practice -- our independent-low-rank-$K$
+diagnostic is one way to sidestep that condition entirely (by not needing it
+to hold), but a more principled fix suggested directly by their own theory
+would encourage or enforce $\mathrm{col}(\Omega_h^\top) \subseteq
+\mathrm{col}(W^V_h)$ per head (e.g.\ via an explicit regularizer, a
+head-specific reparameterization, or an initialization scheme), rather than
+abandoning the value-only-cache property with an independent $K$.
+
+This reframes Track 1 with a testable, theory-grounded target: a dynamic
+$W_R(x_i)$ (or any keyless variant) should be judged by whether it helps
+satisfy Theorem 2's per-head subspace condition, not simply by adding
+capacity or query-conditioning in the abstract -- which is exactly what
+$W_R(x_i) = U_R\,\mathrm{diag}(g(x_iW_Q))\,V_R^\top$ (H1.2 as originally
+stated) does not do, and why it did not help. H1.2 should be revised
+accordingly before further compute is committed to the full pre-training
+sweep.
+
+---
+
+\section{Track 2: Multi-Head Joint Routing via Cross-Head $W_R$}
+
+\subsection{Motivation \& Mathematical Formulation}
+Standard MHA isolates attention heads prior to the final output projection ($W_O$). We extend value-space routing across heads by defining a global cross-head routing operator. Let $Q_{\text{concat}} = [Q^{(1)}, \dots, Q^{(H)}] \in \mathbb{R}^{N \times (H d_h)}$ and $V_{\text{concat}} = [V^{(1)}, \dots, V^{(H)}] \in \mathbb{R}^{N \times (H d_v)}$.
+
+The global scoring matrix is computed as:
+\begin{equation}
+S_{\text{global}} = Q_{\text{concat}} W_R^{\text{global}} V_{\text{concat}}^\top, \quad \text{where } W_R^{\text{global}} \in \mathbb{R}^{(H d_h) \times (H d_v)}
+\end{equation}
+
+To maintain efficiency, we factorize $W_R^{\text{global}}$ into block-diagonal and low-rank cross-head components:
+\begin{equation}
+W_R^{\text{global}} = \text{BlockDiag}\left(W_R^{(1)}, \dots, W_R^{(H)}\right) + U_{\text{cross}} V_{\text{cross}}^\top
+\end{equation}
+where $U_{\text{cross}} \in \mathbb{R}^{(H d_h) \times r_{\text{global}}}$ and $V_{\text{cross}} \in \mathbb{R}^{(H d_v) \times r_{\text{global}}}$.
+
+\subsection{Hypotheses}
+\begin{hypothesis}[H2.1]
+Cross-head value routing mitigates head redundancy, allowing lower-dimensional head projections to collaboratively learn non-orthogonal attention maps.
+\end{hypothesis}
+\begin{hypothesis}[H2.2]
+Low-rank cross-head interaction serves as a hardware-friendly alternative to DeepSeek-style Multi-Head Latent Attention (MLA) without explicit latent tensor compression.
+\end{hypothesis}
+
+---
+
+\section{Track 4: Extreme Projection Compression (Single-Projection Attention)}
+
+\subsection{Motivation \& Mathematical Formulation}
+We push projection reduction to its theoretical limit by asking: \emph{Can a Transformer operate using only one sequence-cached hidden representation?}
+
+Let $Z = X W_Z \in \mathbb{R}^{N \times d_z}$ be the single sequence-cached state. Query and Value representations are derived via static parameter adapters $R_Q \in \mathbb{R}^{d_z \times d_h}$ and $R_V \in \mathbb{R}^{d_z \times d_v}$:
+\begin{equation}
+Q = Z R_Q = X W_Z R_Q, \quad V = Z R_V = X W_Z R_V
+\end{equation}
+
+The single-cache attention score is given by:
+\begin{equation}
+S_{\text{single}} = (X W_Z R_Q) W_R (X W_Z R_V)^\top = X \left( W_Z R_Q W_R R_V^\top W_Z^\top \right) X^\top
+\end{equation}
+
+\subsection{Theoretical Foundations \& Rank Theorem}
+\begin{theorem}[Rank Bottleneck Theorem]
+Let $M_1 = W_Z R_Q W_R R_V^\top W_Z^\top \in \mathbb{R}^{d \times d}$ be the single-projection attention score matrix. The rank of $M_1$ is bounded by:
+\begin{equation}
+\text{rank}(M_1) \le \min(d_z, d_h, d_v)
+\end{equation}
+Furthermore, if $d_z \ge d_h + d_v$, single-projection attention can express any bilinear attention topology capable of being represented by 2-projection Keyless Attention.
+\end{theorem}
+
+---
+
+\section{Milestones \& Roadmap}
+
+\begin{table}[h]
+\centering
+\caption{4-Month Execution Timeline for ICLR Submission}
+\vspace{2mm}
+\begin{tabular}{lp{11cm}}
+\toprule
+\textbf{Period} & \textbf{Key Milestones \& Deliverables} \\
+\midrule
+\textbf{Month 1} & Formalize LaTeX proofs for Theorem 1; write Triton/PyTorch prototypes for Tracks 1, 2, and 4. \\
+\textbf{Month 2} & Run synthetic diagnostic benchmarks (Passkey, Associative Recall); sweep hyperparameter ranks $r$ and $r_{\text{global}}$. \\
+\textbf{Month 3} & Execute 50B token pre-training sweeps on 350M / 1.3B models using SlimPajama; evaluate downstream zero-shot accuracy. \\
+\textbf{Month 4} & Profile VRAM savings and decode throughput with custom Triton kernels; finalize paper draft and release code. \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\end{document}
