@@ -6,8 +6,6 @@
 \usepackage{booktabs}
 \usepackage{hyperref}
 \usepackage{natbib}
-\usepackage{algorithm}
-\usepackage{algpseudocode}
 \usepackage{xcolor}
 \usepackage{caption}
 
@@ -39,17 +37,38 @@ query/key/value projection sharing on synthetic, vision (MNIST/CIFAR/TinyImageNe
 and language-modeling tasks, and a concurrent line of work reframing the
 key-value-shared variant as ``Keyless Attention'' with a value-space routing
 interpretation \citep{gao2026keyless} --- has validated projection sharing
-at small-to-medium model and dataset scale. It remains open whether these
-gains persist at the scale relevant to production vision systems: ViT-Base
-and ViT-Large backbones trained on full ImageNet-1k, and whether the
-overfitting-reduction effect attributed to gradient entanglement between
+at small-to-medium model and dataset scale. It remains open whether these gains persist at ImageNet scale, and whether
+the overfitting-reduction effect attributed to gradient entanglement between
 routing and retrieval parameters \citep{gao2026keyless} is a language-specific
-artifact or a general property of shared-projection attention. This paper
-lays out the experimental design, hypotheses, and evaluation protocol for
-this extension, including a compute-constrained training plan (ImageNet-100
-pilot sweep, followed by a confirmatory ImageNet-1k run) and a downstream
-transfer evaluation using detection backbones. Results sections are left as
-placeholders pending experiments.
+artifact or a general property of shared-projection attention. We train
+ViT-S/16 from scratch on full ImageNet-1k under a compressed DeiT-style
+recipe, once each, for the QKV baseline and three projection-sharing
+variants (Q-K=V, Q=K=V\(^+\), QVV(3)). Q-K=V and QVV(3) close most of the gap
+to the QKV baseline (71.7\% and 72.5\% top-1 vs.\ 74.4\%), while the fully
+symmetric Q=K=V\(^+\) variant lags substantially (66.8\%) --- a larger
+degradation, in relative terms, than the 3.1\% perplexity cost reported for
+the language-modeling setting, and one that does not support the hypothesis
+that symmetric attention maps are less costly in vision than in causal
+language modeling. We find no measurable overfitting-gap difference between
+variants at this schedule: the heavily regularized 100-epoch DeiT recipe
+(RandAugment, Mixup, CutMix, stochastic depth, label smoothing) leaves final-
+and best-epoch validation loss within noise of each other for every
+condition, including the QKV baseline, so the gradient-entanglement
+regularization effect reported for language models is neither confirmed nor
+refuted here. A follow-up run (Section~\ref{sec:followup}) closes a gap
+flagged in the original design --- the Q=K-V\(^+\) condition, previously
+skipped to fit four conditions across four GPUs --- and adds an unplanned
+ablation removing the 2D positional correction from Q=K=V\(^+\). Q=K-V\(^+\)
+reaches 70.4\% top-1, trailing its asymmetric analog Q-K=V by only 1.3 pts
+(vs.\ Q=K=V\(^+\)'s 4.9-pt gap), suggesting the earlier symmetric-attention
+penalty is driven more by collapsing \(V\) into the shared projection than
+by attention-map symmetry itself; dropping the positional correction
+entirely raises Q=K=V from 66.8\% to 70.7\%, though this run also doubled
+the effective batch size, so the two effects are confounded and not yet
+separable. A ViT-B/16 confirmatory run, an ImageNet-100 pilot phase, and a
+downstream detection-transfer evaluation were part of the original design but
+were descoped for this iteration; we report what a single-scale, single-seed
+ViT-S/16 study on ImageNet-1k shows and leave the rest as future work.
 \end{abstract}
 
 \section{Introduction}
@@ -82,7 +101,11 @@ also reports a consistent finding across five language models and four
 architectures (GPT-2, Pythia, Qwen2, Llama 3.2): projection-shared attention
 degrades \emph{more slowly} after the best-validation epoch than standard
 attention, and attributes this to a gradient-entanglement effect between the
-routing and retrieval parameters that acts as an implicit regularizer.
+routing and retrieval parameters that acts as an implicit regularizer. All
+five of their experiments are causal language models; QVV(2) and QVV(3) are
+never evaluated on a vision transformer, so the equivalence to our Q-K=V
+variant is algebraic rather than empirically confirmed on non-causal,
+2D-grid attention --- the gap this paper's ImageNet-1k experiments address.
 
 Two questions follow naturally from combining these two lines of work, and
 motivate this paper:
@@ -112,28 +135,36 @@ Q=K=V variants in \citet{kayyam2026three} is a \emph{native} fit rather than
 an artificial addition, unlike in the 1D sequential setting of language
 modeling.
 
-This paper is a design document for the resulting study: we specify the
-architectures, training recipes, compute budget, hypotheses, and evaluation
-protocol, and lay out the paper structure we intend to fill in once
-experiments are complete. Sections \ref{sec:results} onward contain
-placeholders where results tables and figures will go.
+This paper originated as a design document laying out architectures,
+training recipes, compute budget, hypotheses, and evaluation protocol for a
+multi-scale study (Section~\ref{sec:setup} still describes that original
+plan). For this iteration, the scope was deliberately narrowed to a single
+architecture (ViT-S/16), a single training run per condition, directly on
+full ImageNet-1k with no ImageNet-100 pilot phase, and no detection-transfer
+experiment --- prioritizing a complete, correctly-run single-scale result
+over a partially-completed multi-scale one. Section~\ref{sec:results} reports
+the resulting numbers; Section~\ref{sec:limitations} discusses what the
+descoping leaves untested.
 
-\subsection{Contributions (planned)}
+\subsection{Contributions}
 \begin{itemize}
-    \item First evaluation of projection-sharing attention (Q-K=V, Q=K-V\(^+\),
-    Q=K=V\(^+\), and QVV(3)) on ViT-S/16 and ViT-B/16 backbones trained on
-    full ImageNet-1k, closing the scale gap left by prior small-model
-    vision experiments.
+    \item Evaluation of three projection-sharing attention variants (Q-K=V,
+    Q=K=V\(^+\), and QVV(3)) against a standard QKV baseline on ViT-S/16
+    trained from scratch on full ImageNet-1k, extending prior evidence for
+    this family of methods beyond MNIST/CIFAR/TinyImageNet scale.
     \item A direct test of whether the overfitting-reduction /
     gradient-entanglement effect reported for language models
-    \citep{gao2026keyless} reproduces under non-causal, 2D-grid attention.
-    \item A downstream transfer evaluation, fine-tuning the resulting
-    backbones into a detection pipeline (FCOS/GFL-style) to test whether
-    projection sharing affects fine-grained spatial localization, not just
-    classification accuracy.
-    \item A practical training-budget report (wall-clock time, GPU-hours)
-    for reproducing this study on 1--2 A100-class GPUs, to make the
-    experiment accessible to groups without large clusters.
+    \citep{gao2026keyless} reproduces under non-causal, 2D-grid attention ---
+    which, at this training schedule, it does not measurably do, for any
+    variant including the baseline (Section~\ref{sec:discussion}).
+    \item A follow-up run adding the previously-skipped Q=K-V\(^+\)
+    condition and an unplanned ablation of the 2D positional correction on
+    Q=K=V (Section~\ref{sec:followup}), refining the H3 verdict from
+    Section~\ref{sec:discussion}.
+    \item \emph{Deferred to future work:} a ViT-B/16 (and ViT-L/16)
+    confirmatory run at larger scale, an ImageNet-100 pilot phase, and a
+    downstream detection-transfer evaluation (FCOS/GFL-style), all part of
+    the original design (Section~\ref{sec:setup}) but out of scope here.
 \end{itemize}
 
 \section{Related Work}
@@ -333,6 +364,36 @@ confirmatory phase, total estimated compute is on the order of
 \(\sim\)4--5 GPU-days on a single A100, or \(\sim\)2.5--3 GPU-days on two,
 dominated by the ImageNet-1k ViT-B/16 runs.
 
+\paragraph{What was actually run.} The plan above was descoped before
+execution: we ran only the ImageNet-1k phase, only on ViT-S/16, and only one
+seed per condition, skipping the ImageNet-100 pilot and the ViT-B/16/ViT-L/16
+confirmatory scale-up. Of the five conditions in the design, four were run
+--- QKV baseline, Q-K=V, Q=K=V\(^+\), and QVV(3) --- omitting Q=K-V\(^+\)
+(query-key merged with positional correction) to keep the sweep to what
+fits on four GPUs at once. Each condition trained for 100 epochs on the
+compressed DeiT recipe of Section~\ref{sec:setup} (RandAugment, Mixup
+\(\alpha{=}0.8\), CutMix \(\alpha{=}1.0\), stochastic depth, label smoothing
+0.1), batch size 128 (the largest that fit in 11GB), on hardware substantially
+below the A100-class budget in Table~\ref{tab:compute}: four RTX 2080 Ti GPUs,
+one condition per GPU, run to completion in parallel. Measured throughput was $\sim$575 img/s/GPU, $\sim$3320s/epoch, i.e.\
+$\sim$92 GPU-hours per condition; running all four conditions concurrently,
+one per GPU, kept total wall-clock to the same $\sim$92 hours ($\sim$3.8
+days) rather than requiring $4\times$ that.
+
+\paragraph{Follow-up run.} A second batch, reported in
+Section~\ref{sec:followup}, trained the two remaining conditions: Q=K-V\(^+\)
+(omitted above) and an unplanned ablation, Q=K=V with the 2D positional
+correction removed. With only two conditions to run and all four GPUs free,
+each was trained 2-GPU DDP (batch size 128 per GPU, effective global batch
+256, base LR linearly scaled to match) rather than the single-GPU,
+batch-128 setup used for the other four conditions --- roughly
+$2\times$ the effective batch size and LR of Table~\ref{tab:imagenet1k}, with
+epoch time falling to $\sim$1630--1645s accordingly. This is a genuine
+setting difference, not just a resource-allocation detail, so
+Section~\ref{sec:followup}'s numbers are not a controlled addition to
+Table~\ref{tab:imagenet1k}; we flag comparisons against it explicitly where
+the batch-size difference matters.
+
 \subsection{Evaluation metrics}
 \begin{itemize}
     \item Top-1 / top-5 accuracy at best-validation epoch (mirrors
@@ -363,72 +424,281 @@ small-object AP, where fine spatial routing matters most.
 \section{Results}
 \label{sec:results}
 
-\subsection{ImageNet-100 pilot sweep}
-\todo{Insert Table~\ref*{tab:pilot} results once ViT-S/16 sweep completes.}
+\subsection{ImageNet-1k, ViT-S/16}
+Table~\ref{tab:imagenet1k} reports top-1/top-5 accuracy at the best
+validation epoch, the overfitting gap \(\Delta\) (final-epoch minus
+best-epoch validation loss), inference-time KV/activation cache relative to
+the QKV baseline, parameter count, and per-GPU training batch size, for six
+conditions trained to 100 epochs on full ImageNet-1k. Best-epoch numbers
+(not final-epoch) are used for Top-1/Top-5 since a small amount of post-peak
+drift is visible for every condition; final-epoch numbers, used only for
+\(\Delta\), differ from the best-epoch numbers by at most 0.03 pts top-1 for
+any condition. The first four rows are the original controlled sweep, one
+condition per GPU at batch 128; the last two (below the rule) are a
+follow-up batch trained together at effective batch 256 (2-GPU DDP,
+linearly-scaled LR) rather than batch 128, discussed separately in
+Section~\ref{sec:followup} because of that setting difference.
 
 \begin{table}[h]
 \centering
-\caption{ImageNet-100 pilot sweep, ViT-S/16, 100 epochs (placeholder).}
-\label{tab:pilot}
-\begin{tabular}{@{}lccccc@{}}
+\caption{ImageNet-1k, ViT-S/16, 100 epochs, one run per condition. Top-1/
+Top-5 at best validation epoch; \(\Delta\) Overfit is final-epoch minus
+best-epoch validation loss (negative values indicate validation loss was
+still falling at epoch 100). The last two rows trained at a different
+effective batch size (Section~\ref{sec:followup}) and are not directly
+controlled against the first four.}
+\label{tab:imagenet1k}
+\begin{tabular}{@{}lcccccc@{}}
 \toprule
-Variant & Top-1 & Top-5 & $\Delta$ Overfit & Cache & Params \\
+Variant & Top-1 & Top-5 & $\Delta$ Overfit & Cache & Params & Batch \\
 \midrule
-QKV (baseline) & \todo{} & \todo{} & \todo{} & 100\% & \todo{} \\
-Q-K=V & \todo{} & \todo{} & \todo{} & 50\% & \todo{} \\
-Q=K-V\(^+\) & \todo{} & \todo{} & \todo{} & 50\% & \todo{} \\
-Q=K=V\(^+\) & \todo{} & \todo{} & \todo{} & 33\% & \todo{} \\
-QVV(3) & \todo{} & \todo{} & \todo{} & 50\% & \todo{} \\
+QKV (baseline) & 74.38\% & 91.93\% & $+$0.0010 & 100\% & 22.05M & 128 \\
+Q-K=V          & 71.67\% & 90.32\% & $-$0.0004 & 50\%  & 20.28M & 128 \\
+Q=K=V\(^+\)    & 66.76\% & 87.14\% & $-$0.0014 & 33\%  & 18.50M & 128 \\
+QVV(3)         & 72.55\% & 90.81\% & $+$0.0009 & 50\%  & 22.05M & 128 \\
+\midrule
+Q=K-V\(^+\)     & 70.40\% & 89.47\% & $-$0.0011 & 50\% & 20.28M & 256 \\
+Q=K=V (no $^+$) & 70.74\% & 89.74\% & $-$0.0027 & 33\% & 18.50M & 256 \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\subsection{ImageNet-1k confirmatory run}
-\todo{Insert ViT-B/16 (and ViT-L/16, if run) results, mirroring
-Table~3 of \citet{gao2026keyless}.}
+Relative to the QKV baseline, Q-K=V and QVV(3) close most but not all of the
+gap (\(-\)2.71 and \(-\)1.83 pts top-1), while Q=K=V\(^+\) lags well behind
+(\(-\)7.62 pts). Every \(\Delta\)Overfit value is within 0.0014 nats of zero
+--- an order of magnitude smaller than would be needed to distinguish
+variants, and consistent with none of the six models overfitting in any
+meaningful sense at this schedule (see Section~\ref{sec:discussion}).
+Cache and parameter figures match the design targets in
+Section~\ref{sec:setup}: QVV(3) matches QKV's parameter count while
+retaining Q-K=V's 50\% inference cache, and Q=K=V\(^+\) and Q=K=V (no
+\(^+\)) tie for the fewest parameters of any condition tested by dropping
+two of three projections.
+
+\subsection{Follow-up: Q=K-V\(^+\) and a positional-correction ablation}
+\label{sec:followup}
+The last two rows of Table~\ref{tab:imagenet1k} are the two conditions
+trained in the follow-up batch described in Section~\ref{sec:setup}:
+Q=K-V\(^+\), the condition omitted from the original four-way sweep, and
+Q=K=V (no \(^+\)), an ablation that removes the 2D positional correction
+from Q=K=V\(^+\) while leaving every other projection unchanged. Both
+trained 2-GPU DDP at effective batch 256 (vs.\ batch 128 for the first four
+rows), so absolute numbers here are not directly controlled against them.
+
+\paragraph{Closing the H3 gap.} Q=K-V\(^+\) and Q-K=V have identical
+parameter counts and cache targets (Table~\ref{tab:imagenet1k}), differing
+only in whether \(Q\) is a separate projection (Q-K=V) or tied to \(K\)
+(Q=K-V\(^+\), corrected for the resulting symmetric attention map). Their
+gap is 1.27 pts (71.67\% vs.\ 70.40\%), far smaller than Q=K=V\(^+\)'s 4.91-pt
+gap to the same Q-K=V reference. Since Q=K=V\(^+\) differs from Q=K-V\(^+\)
+by also collapsing \(V\) into the shared projection, this points at
+\emph{that} collapse --- not the symmetric attention map itself --- as the
+main source of the penalty reported in Section~\ref{sec:discussion}, more
+consistent with H3's original motivation than the all-symmetric-variants
+verdict the single Q=K=V\(^+\) data point supported. The batch-size caveat
+above applies: Q=K-V\(^+\) and Q-K=V were not trained under matched
+settings, so this reading should be treated as suggestive pending a
+same-batch confirmatory run.
+
+\paragraph{Positional correction ablation.} Removing the 2D positional
+correction raises Q=K=V's top-1 from 66.76\% (Q=K=V\(^+\), Table~\ref{tab:imagenet1k})
+to 70.74\% --- the opposite of what the correction was designed to do. This
+is the largest single swing in Table~\ref{tab:imagenet1k}, but it is fully confounded with
+the batch-256/higher-LR setting (Section~\ref{sec:setup}): we cannot
+currently attribute it to the correction, the batch size, the LR, or an
+interaction among them. We report it because of its size, not because we
+can explain it; isolating the cause needs a same-batch-size run of Q=K=V\(^+\)
+(or, symmetrically, Q=K=V at batch 128), left for future work.
+
+\subsection{Post-hoc K=V surgery and distillation recovery}
+\label{sec:surgery}
+Table~\ref{tab:imagenet1k} asks whether \emph{jointly training} Q-K=V from a
+random initialization matches QKV. A companion question, developed in a
+parallel note on post-hoc weight surgery (same repository, \texttt{distillation}
+branch), is different: can an already-trained QKV teacher's independent
+$K$/$V$ projections be tied together \emph{after the fact}, with no
+retraining, and if that collapses (it does, everywhere it has been tested so
+far --- synthetic sequence tasks, MNIST/FMNIST/CIFAR-10/100, and a
+300M-parameter FineWeb-Edu language model), how much of the gap does a short
+distillation fine-tune against the QKV teacher's soft logits recover,
+relative to the jointly-trained Q-K=V ceiling in Table~\ref{tab:imagenet1k}?
+We repeat that protocol here as a first ImageNet-1k/ViT-S/16 data point,
+reusing the QKV and Q-K=V checkpoints already trained for
+Table~\ref{tab:imagenet1k} rather than training anything new: three surgery
+modes (\textsc{keep\_k}: student's shared projection $\leftarrow$ teacher's
+$W^K$; \textsc{keep\_v}: $\leftarrow W^V$; \textsc{avg}: $\leftarrow
+\tfrac12(W^K+W^V)$), each evaluated zero-shot immediately after surgery, then
+fine-tuned for 5 epochs against the QKV teacher's soft logits (cross-entropy
+on hard labels + KL divergence at $T{=}2$, equal weighting), with light
+augmentation (RandomResizedCrop + flip only --- the heavy DeiT recipe of
+Section~\ref{sec:setup} is for training 100 epochs from scratch, not a short
+recovery fine-tune, and Mixup/CutMix's soft labels do not compose with
+hard-label CE).
+
+\begin{table}[h]
+\centering
+\caption{Post-hoc K=V surgery on the ImageNet-1k QKV teacher (74.38\% top-1),
+zero-shot and after 5 epochs of distillation, against the jointly-trained
+Q-K=V ceiling (71.67\% top-1) from Table~\ref{tab:imagenet1k}.}
+\label{tab:surgery}
+\begin{tabular}{@{}lcccccc@{}}
+\toprule
+Mode & ZS Top-1 & ZS Top-5 & Distilled Top-1 & Distilled Top-5 & $\Delta$ vs.\ ceiling \\
+\midrule
+\textsc{keep\_k} & 0.08\% & 0.46\% & 71.01\% & 89.98\% & $-$0.66 pt \\
+\textsc{keep\_v} & 1.91\% & 6.37\% & 71.93\% & 90.43\% & $+$0.26 pt \\
+\textsc{avg}     & 0.66\% & 2.50\% & 71.87\% & 90.42\% & $+$0.20 pt \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All three collapse to near-random ($1/1000 = 0.1\%$ chance level) under
+zero-shot surgery, consistent with every prior setting and with the
+convex-hull argument motivating that note: forcing $K=V$ post-hoc confines
+each attention block's output to the convex hull of vectors an
+already-specialized $K$-projection was never trained to preserve query-independent
+content in. The zero-shot ordering does not replicate the small-scale/LLM
+pattern where \textsc{avg} was uniformly safest: here \textsc{keep\_v}
+(1.91\% top-1) is safest, with \textsc{avg} (0.66\%) between it and
+\textsc{keep\_k} (0.08\%) rather than above both.
+
+After 5 epochs of distillation, though, the picture that matters more ---
+recovery relative to the from-scratch ceiling --- looks \emph{better} here
+than at any prior scale, not worse: all three modes land within 0.7 pt of
+the 71.67\% ceiling, and \textsc{keep\_v} and \textsc{avg} both slightly
+\emph{exceed} it (by 0.26 and 0.20 pt respectively), echoing the one
+exception already on record at small scale (\textsc{avg}/CIFAR-10 also
+edged past its from-scratch ceiling). Most notably, \textsc{keep\_k} ---
+the mode with a \emph{persistent}, only-half-closed gap even after 10
+epochs on CIFAR-10/100, and the worst-recovering mode at LLM scale too ---
+reaches 71.01\% here, just 0.66 pt behind, with per-epoch gains
+(+51.1, +7.3, +5.6, +4.6, +1.3 pts) decelerating sharply enough by epoch 5
+that we did not judge a 10-epoch extension necessary. Both the zero-shot
+severity and the post-distillation \textsc{keep\_k} penalty that motivated
+treating it as the qualitatively harder recovery case at every prior scale
+are much smaller at ImageNet-1k/ViT-S/16 scale --- an open question for why
+(more distillation steps per epoch on a 1.28M-image training set than on
+CIFAR's 50k, a wider/deeper model with more redundant capacity to route
+around a mismatched basis, or something scale-specific to vision
+classification) that this single run cannot settle on its own.
+
+\subsection{ViT-B/16 confirmatory run}
+Not run in this iteration; deferred to future work along with the
+ImageNet-100 pilot phase (Section~\ref{sec:setup}).
 
 \subsection{Detection transfer}
-\todo{Insert COCO AP table for backbone transfer experiment.}
+Not run in this iteration. No FCOS/GFL detection scaffold currently exists
+in this codebase, and standing one up was judged out of scope alongside the
+scale-up to ViT-B/L; H4 remains untested. Deferred to future work.
 
 \section{Discussion}
 \label{sec:discussion}
-\todo{Fill in once results are available. Key questions to address:
-(1) does the ImageNet-scale accuracy gap match, exceed, or undercut the
-3.1\% LM-scale gap reported in \citet{kayyam2026three}; (2) does the
-overfitting-gap effect (H2) hold, and if so, is the magnitude comparable
-to the language-modeling result, where the 36-layer QVV(3) model showed a
-$\Delta$Overfit of 0.6866 vs.\ 0.8404 for standard attention; (3) does H3
-hold, i.e.\ is the symmetric-vs-asymmetric gap smaller in vision than in
-language; (4) does classification parity predict detection parity (H4), or
-does small-object AP reveal a localization cost not visible in top-1
-accuracy.}
+
+\paragraph{H1 (accuracy parity) --- not supported at this schedule.} None of
+the three shared-projection variants comes within the \(\lesssim\)0.5 pt
+target. In relative terms, Q-K=V's 2.71 pt drop (3.6\% relative) is close to
+the 3.1\% perplexity cost reported for the analogous language-modeling
+variant in \citet{kayyam2026three}, and QVV(3)'s 1.83 pt drop (2.5\%
+relative) is similarly in that range --- but \citet{gao2026keyless} report
+QVV(3) \emph{matching or exceeding} standard attention on language
+perplexity, which does not reproduce here for ImageNet top-1. Q=K=V\(^+\)'s
+7.62 pt drop (10.2\% relative) clearly exceeds the LM-scale gap. We cannot
+rule out that a full 300-epoch DeiT schedule (rather than the 100-epoch
+compressed one used here) would narrow these gaps, since shared-projection
+variants may simply need more optimization steps to reach the same optimum.
+
+\paragraph{H2 (overfitting reduction) --- untestable at this schedule, not
+confirmed or refuted.} Every condition, including the QKV baseline, shows
+\(|\Delta\text{Overfit}| \le 0.0014\) nats (Table~\ref{tab:imagenet1k}):
+validation loss is still flat-to-falling at epoch 100 for all four models.
+The DeiT-style augmentation stack (RandAugment, Mixup, CutMix, stochastic
+depth, label smoothing) evidently suppresses overfitting for ViT-S/16 on
+ImageNet-1k at 100 epochs regardless of attention variant, unlike the
+36-layer language-modeling setting in \citet{gao2026keyless} where standard
+attention showed a substantially larger gap (0.8404 vs.\ 0.6866 for QVV(3))
+than any baseline here. Since the baseline itself doesn't overfit, there is
+no gap for shared-projection attention to reduce, and this experiment cannot
+distinguish a real absence of the effect from an effect masked by
+regularization; a lower-augmentation or longer-schedule run would be needed
+to test H2 properly.
+
+\paragraph{H3 (symmetric vs.\ asymmetric penalty) --- mixed; collapse, not
+symmetry, looks like the driver.} The fully symmetric Q=K=V\(^+\) trails the
+asymmetric variants by 4.91 pts (vs.\ Q-K=V) and 5.79 pts (vs.\ QVV(3)) ---
+a substantial penalty for collapsing to a symmetric attention map, running
+counter to H3's expectation that spatial (non-causal) attention would make
+symmetry comparatively cheap. The follow-up run (Section~\ref{sec:followup})
+now supplies the second symmetric variant the original design called for:
+Q=K-V\(^+\), which shares \(Q\) and \(K\) but keeps \(V\) separate, matching
+Q-K=V's parameter count and cache target exactly. Its gap to Q-K=V is only
+1.27 pts --- an order of magnitude smaller than Q=K=V\(^+\)'s 4.91-pt gap to
+the same reference --- despite both Q=K-V\(^+\) and Q=K=V\(^+\) producing a
+symmetric attention map. That points at collapsing \(V\) into the shared
+projection, not attention-map symmetry per se, as the larger source of the
+penalty, which is closer to H3's original motivation (symmetry itself being
+comparatively cheap for spatial attention) than the verdict the single
+Q=K=V\(^+\) data point supported alone. This reading carries the caveat
+that Q=K-V\(^+\) trained at a different effective batch size than Q-K=V
+(Section~\ref{sec:followup}), so it is suggestive rather than a controlled
+confirmation, and a same-batch-size rerun is needed before treating H3 as
+resolved either way.
+
+\paragraph{H4 (detection transfer) --- untested.} No detection experiment
+was run this iteration (Section~\ref{sec:results}); H4 remains open.
 
 \section{Limitations}
 \label{sec:limitations}
-As with \citet{kayyam2026three}, our confirmatory ImageNet-1k runs use a
-compressed training schedule (100--150 epochs) rather than the full
-300-epoch DeiT recipe, for compute-budget reasons; this is standard
-practice for controlled ablation studies but means absolute accuracy
-numbers should not be compared directly to published SOTA ViT results
-trained with the full recipe or with ImageNet-21k pretraining. The
-ImageNet-100 pilot, used for variant selection, is not guaranteed to rank
-variants identically to full ImageNet-1k, though we treat any pilot-stage
-finding as provisional and validated only by the confirmatory run.
-ViT-L/16 results are included only if compute allows and should be
-treated as a secondary scaling check rather than a core claim.
+This iteration covers a single architecture (ViT-S/16), a single seed per
+condition, and a single compressed schedule (100 epochs); none of these are
+varied, so we cannot report variance across seeds or confirm that findings
+hold at ViT-B/16 or ViT-L/16 scale, or under the full 300-epoch DeiT recipe.
+The ImageNet-100 pilot phase and the ViT-B/16 confirmatory run described in
+Section~\ref{sec:setup} were both skipped, as was the downstream
+detection-transfer experiment (H4). All five originally-planned conditions
+have now been trained, but not under matched settings: the follow-up run
+adding Q=K-V\(^+\) (Section~\ref{sec:followup}) used effective batch 256 (2-GPU
+DDP, linearly-scaled LR) rather than the batch 128 used for the other four
+conditions, so its H3 comparison against Q-K=V is suggestive, not a
+controlled replacement for a same-batch rerun. The same follow-up batch
+added an unplanned sixth condition, Q=K=V with the positional correction
+removed, whose large accuracy swing relative to Q=K=V\(^+\) is confounded
+with that same batch-size difference and cannot yet be attributed to the
+correction itself (Section~\ref{sec:followup}). As with \citet{kayyam2026three},
+the compressed 100-epoch schedule (rather than the full 300-epoch DeiT
+recipe) means absolute accuracy numbers should not be compared directly to
+published SOTA ViT results trained with the full recipe or with
+ImageNet-21k pretraining; the same compression is also the likely cause of
+the null H2 result above, since it may not train long enough, or with light
+enough effective regularization net of augmentation, for any condition to
+visibly overfit.
 
 \section{Conclusion}
 \label{sec:conclusion}
-We have laid out a concrete experimental design to test whether
-projection-sharing attention --- validated at small-to-medium scale in
-\citet{kayyam2026three} and reframed and generalized via depth-\(m\)
-factorization in \citet{gao2026keyless} --- generalizes to large-scale
-vision transformers trained on ImageNet-1k, and whether the
-overfitting-reduction effect observed in language models is a general
-property of shared-projection attention or specific to causal language
-modeling. Results will be added to Section~\ref{sec:results} following
-completion of the pilot and confirmatory training runs described in
-Section~\ref{sec:setup}.
+We tested whether projection-sharing attention --- validated at
+small-to-medium scale in \citet{kayyam2026three} and reframed and
+generalized via depth-\(m\) factorization in \citet{gao2026keyless} ---
+generalizes to ImageNet-1k, using ViT-S/16 as a first, deliberately narrowed
+scale point. Q-K=V and QVV(3) recover most but not all of the QKV baseline's
+top-1 accuracy (2.71 and 1.83 pt gaps respectively), while the fully
+symmetric Q=K=V\(^+\) lags well behind (7.62 pt gap) --- a larger, not
+smaller, symmetric-attention penalty than in the causal language-modeling
+setting, running against H3's motivating expectation. A follow-up run
+(Section~\ref{sec:followup}) filled in the previously-skipped Q=K-V\(^+\)
+condition and found its gap to the matched-capacity asymmetric Q-K=V is only
+1.3 pts, an order of magnitude smaller than Q=K=V\(^+\)'s --- suggesting the
+earlier verdict conflated symmetry with the separate cost of collapsing
+\(V\) into the shared projection, though this reading is not yet
+confirmed under matched batch size. The same follow-up unexpectedly found
+that removing the 2D positional correction from Q=K=V raises its top-1 by
+about 4 pts, a result we can currently only report, not explain, since it is
+confounded with that run's larger batch size. The
+overfitting-reduction effect central to \citet{gao2026keyless}'s account of
+\emph{why} shared-projection attention works did not appear for any
+condition here, baseline included, because the DeiT augmentation recipe
+suppressed overfitting broadly at this schedule; this leaves H2 open rather
+than refuted. The ViT-B/16 confirmatory run, ImageNet-100 pilot,
+detection-transfer evaluation, and a batch-size-matched rerun of the
+follow-up conditions all remain as future work.
 
 \bibliographystyle{plainnat}
 \begin{thebibliography}{99}
